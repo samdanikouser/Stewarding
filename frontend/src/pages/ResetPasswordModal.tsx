@@ -38,27 +38,32 @@ export function ResetPasswordModal({ employee, onClose, onDone }: { employee: Em
   }
 
   return (
-    <Modal open title={`Reset password for ${employee.full_name}`} onClose={onClose}>
+    <Modal
+      open
+      size="md"
+      title={issued ? 'Temporary password' : 'Reset password'}
+      description={employee.full_name}
+      onClose={onClose}
+      footer={issued ? <Button onClick={onClose}>Done</Button> : <>
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" form="reset-password-form">Reset password</Button>
+      </>}
+    >
       {issued ? (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <p className="text-sm">Give this temporary password to {employee.full_name} in person. It is shown only now.</p>
-          <div className="flex items-center gap-2 rounded-md border border-border bg-surface-muted px-3 py-3">
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-muted px-4 py-3">
             <code className="flex-1 select-all text-lg tracking-wider">{issued}</code>
             <Button type="button" variant="outline" size="sm" onClick={copy}>{copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />} {copied ? 'Copied' : 'Copy'}</Button>
           </div>
           <p className="text-sm text-ink-muted">They will be asked to choose their own password at the next sign-in, and any open sessions have ended.</p>
-          <div className="flex justify-end"><Button onClick={onClose}>Done</Button></div>
         </div>
       ) : (
-        <form onSubmit={reset} className="space-y-3">
+        <form id="reset-password-form" onSubmit={reset} className="space-y-5">
           <p className="text-sm text-ink-muted">A temporary password is generated for you to pass on. The employee must replace it when they sign in, and their open sessions end now.</p>
-          <Field label="Or set one yourself (optional)" hint="At least 10 characters, with two kinds of characters.">
+          <Field label="Or set one yourself (optional)">
             <Input type="text" autoComplete="off" value={custom} minLength={custom ? 10 : undefined} onChange={(e) => setCustom(e.target.value)} />
           </Field>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit">Reset password</Button>
-          </div>
         </form>
       )}
     </Modal>

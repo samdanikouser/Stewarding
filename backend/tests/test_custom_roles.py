@@ -122,3 +122,76 @@ def test_nobody_can_hand_out_more_access_than_they_hold(client, login, db, clock
     names = {o["name"] for o in client.get("/api/roles/options", headers=hr).json()}
     assert "manager" not in names and "boss_light" not in names and "hr_lead" in names
     assert {"manager", "supervisor", "steward", "hr_lead", "boss_light"} <= {o["name"] for o in client.get("/api/roles/options", headers=m).json()}
+
+
+def test_the_dashboard_shows_only_the_parts_a_role_may_open(client, login, db, clock):
+    m = login(MGR)
+    make_role(client, m, label="Stock Viewer", permissions=["dashboard.view", "inventory.module"])
+    viewer = hire(client, db, m, "stock_viewer", "stock@example.com")
+    seen = client.get("/api/dashboard", headers=viewer).json()
+    assert seen["sections"] == ["stock"] and seen["approvals"] == []
+    assert seen["charts"]["attendance_trend"] == [] and seen["charts"]["task_trend"] == [] and seen["charts"]["monitoring_compliance"] == []
+    assert seen["kpis"]["scheduled_today"] == 0 and seen["kpis"]["daily_completion"]["denominator"] == 0
+    assert {i["category"] for i in seen["supervisor"]["pending"]["items"]} <= {"low_stock", "transfer"}
+    assert seen["supervisor"]["staff_today"] == []
+    full = client.get("/api/dashboard", headers=m).json()
+    assert full["sections"] == ["people", "checklists", "monitoring", "stock", "breakage"] and full["approvals"] == ["tasks", "readings", "breakage"]
+    assert full["charts"]["attendance_trend"]
+
+
+def test_approval_alerts_reach_every_role_that_may_approve_not_only_managers(client, login, db, clock):
+    from app.models import Notification
+    m = login(MGR)
+    make_role(client, m, label="Store Approver", permissions=["dashboard.view", "inventory.module", "stock.transfer", "stock.approve"])
+    make_role(client, m, label="Store Clerk", permissions=["dashboard.view", "inventory.module", "stock.transfer"])
+    hire(client, db, m, "store_approver", "approver@example.com", places=("MK",))
+    hire(client, db, m, "store_clerk", "clerk@example.com", places=("MK",))
+    far = hire(client, db, m, "store_approver", "faraway@example.com", places=("RB",))
+    sup = login(SUP)
+    sent = client.post("/api/stock/transfers", headers=sup, json={"from_location_id": loc_id(db, "MK"), "to_location_id": loc_id(db, "BQ"),
+                                                                  "lines": [{"item_id": 1, "qty": 1}]})
+    assert sent.status_code == 201 and sent.json()["status"] == "requested"
+    told = {db.scalar(select(User.email).where(User.id == n.user_id)) for n in db.scalars(select(Notification).where(Notification.kind == "transfer_pending"))}
+    assert told == {MGR, "approver@example.com"}
+    assert far and "clerk@example.com" not in told and "faraway@example.com" not in told
+
+
+def test_built_in_roles_report_their_default_permissions_so_an_edit_can_be_undone(client, login, db, clock):
+    m = login(MGR)
+    listed = {r["name"]: r for r in client.get("/api/roles", headers=m).json()}
+    assert listed["steward"]["defaults"] and "attendance.self" in listed["steward"]["defaults"]
+    made = make_role(client, m).json()
+    assert made["defaults"] is None
+    client.put(f"/api/roles/{listed['steward']['id']}", headers=m, json={"permissions": ["dashboard.view"]})
+    changed = {r["name"]: r for r in client.get("/api/roles", headers=m).json()}["steward"]
+    assert changed["permissions"] == ["dashboard.view"] and changed["defaults"] == listed["steward"]["defaults"]
+
+
+def apply_head_chef_migration(db):
+    import importlib.util, pathlib
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    path = pathlib.Path(__file__).parent.parent / "alembic" / "versions" / "p0d4f8b2e6a9_head_chef_role.py"
+    spec = importlib.util.spec_from_file_location("head_chef", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with Operations.context(MigrationContext.configure(db.connection())):
+        module.upgrade()
+    db.commit()
+    db.expire_all()
+
+
+def test_the_head_chef_role_approves_monitoring_and_sees_nothing_of_stock_staff_or_pay(client, login, db, clock):
+    apply_head_chef_migration(db)
+    apply_head_chef_migration(db)                                                    # running it again changes nothing
+    assert db.scalars(select(Role).where(Role.name == "head_chef")).all().__len__() == 1
+    chef = hire(client, db, login(MGR), "head_chef", "headchef@example.com")
+    for url in ("/api/monitoring/due", "/api/monitoring/readings", "/api/monitoring/corrective-actions", "/api/checklists/instances", "/api/notifications"):
+        assert client.get(url, headers=chef).status_code == 200, url
+    assert client.post("/api/monitoring/readings/review", json={"reading_ids": [999]}, headers=chef).status_code == 200   # may approve logs
+    assert client.post("/api/monitoring/corrective-actions/999/decision", json={"decision": "approve"}, headers=chef).status_code != 403
+    for url in ("/api/inventory/items", "/api/employees", "/api/attendance", "/api/roster/assignments", "/api/stock/insights",
+                "/api/reports/catalog", "/api/roles", "/api/settings", "/api/breakage"):
+        assert client.get(url, headers=chef).status_code == 403, url
+    modules = {m["key"] for m in client.get("/api/auth/me", headers=chef).json()["modules"]}
+    assert modules == {"dashboard", "checklists", "monitoring", "training", "tasks"}

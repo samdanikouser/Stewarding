@@ -44,7 +44,7 @@ export function ColumnChart({ data, labelKey, series, height = 140 }: ColumnChar
       <div className="flex items-end gap-1 overflow-x-auto" style={{ height }} role="img"
         aria-label={`${series.map((s) => s.label).join(' and ')} by ${labelKey}`}>
         {data.map((d) => (
-          <div key={String(d[labelKey])} className="flex h-full min-w-5 flex-1 items-end justify-center gap-0.5"
+          <div key={String(d[labelKey])} className="flex h-full min-w-0 flex-1 items-end justify-center gap-0.5"
             title={`${d[labelKey]}: ${series.map((s) => `${s.label} ${d[s.key]}`).join(', ')}`}>
             {series.map((s) => (
               <div key={s.key} className={cn('w-full max-w-4 rounded-t', s.className)}
@@ -55,7 +55,7 @@ export function ColumnChart({ data, labelKey, series, height = 140 }: ColumnChar
       </div>
       <div className="mt-1 flex gap-1 text-[10px] text-ink-muted">
         {data.map((d, i) => (
-          <span key={String(d[labelKey])} className="min-w-5 flex-1 truncate text-center">
+          <span key={String(d[labelKey])} className="min-w-0 flex-1 truncate text-center">
             {data.length > 10 && i % 2 === 1 ? '' : String(d[labelKey]).slice(-5)}
           </span>
         ))}
@@ -110,5 +110,31 @@ export function QuantityBars({ items, unit = '' }: { items: { label: string; val
         </li>
       ))}
     </ul>
+  )
+}
+
+/** A line of prices over time, scaled between the lowest and highest price so small moves are visible; hover a point for its details. */
+export function PriceLine({ points, format }: { points: { label: string; value: number; sub?: string }[]; format: (n: number) => string }) {
+  if (points.length === 0) return <p className="py-6 text-center text-sm text-ink-muted">No priced invoices for this item yet.</p>
+  const width = 320
+  const height = 120
+  const pad = 8
+  const low = Math.min(...points.map((p) => p.value))
+  const high = Math.max(...points.map((p) => p.value))
+  const span = high - low || 1
+  const step = points.length > 1 ? (width - pad * 2) / (points.length - 1) : 0
+  const at = (p: { value: number }, i: number) => ({ x: points.length > 1 ? pad + i * step : width / 2, y: pad + (1 - (p.value - low) / span) * (height - pad * 2) })
+  const line = points.map((p, i) => { const { x, y } = at(p, i); return `${x},${y}` }).join(' ')
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-36 w-full" role="img" aria-label={`Price from ${format(points[0].value)} to ${format(points[points.length - 1].value)} over ${points.length} invoices`}>
+        {[0, 0.5, 1].map((g) => <line key={g} x1={0} x2={width} y1={pad + g * (height - pad * 2)} y2={pad + g * (height - pad * 2)} className="stroke-border" strokeWidth={0.5} />)}
+        {points.length > 1 && <polyline points={line} fill="none" className="stroke-brand" strokeWidth={2} strokeLinejoin="round" />}
+        {points.map((p, i) => { const { x, y } = at(p, i); return <circle key={`${p.label}-${i}`} cx={x} cy={y} r={3.5} className="fill-brand"><title>{`${p.label}: ${format(p.value)}${p.sub ? ` (${p.sub})` : ''}`}</title></circle> })}
+      </svg>
+      <div className="flex justify-between text-[11px] text-ink-muted">
+        <span>{points[0].label}</span><span>High {format(high)} - Low {format(low)}</span><span>{points[points.length - 1].label}</span>
+      </div>
+    </div>
   )
 }

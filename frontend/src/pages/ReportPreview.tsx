@@ -40,7 +40,7 @@ function Mark({ cell }: { cell: Cell }) {
 }
 
 export function ReportPreview({ doc }: { doc: RecordDoc }) {
-  if (doc.groups.length === 0) return <EmptyState title="Nothing recorded for these filters" hint="Try a wider date range or another location." />
+  if (doc.groups.length === 0) return <EmptyState title="Nothing recorded for these filters" />
   return (
     <div className="space-y-3">
       {doc.groups.map((group) => {

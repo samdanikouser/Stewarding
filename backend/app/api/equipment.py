@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..audit import audit
 from ..db import get_db
 from ..deps import check_location, require, scoped_locations
-from ..models import Employee, Equipment, EquipmentSchedule, Location, Shift, User
+from ..models import Employee, Equipment, EquipmentSchedule, Location, Shift, TemperatureReading, User
 from ..pagination import row
 from ..services.settings import get_setting
 from ..services.monitoring import failure_count
@@ -23,7 +23,7 @@ EQUIPMENT_FIELDS = ("id", "code", "name", "kind", "location_id", "manufacturer",
                     "supervisor_id", "status", "procedure_reference", "maintenance_notes", "active")
 SCHEDULE_FIELDS = ("id", "equipment_id", "stage", "parameter", "unit", "value_type", "require_reference", "source", "timing",
                    "time_of_day", "interval_minutes", "weekdays", "day_of_month", "shift_id", "min_value", "max_value", "options",
-                   "fail_options", "max_length", "required", "reference_label", "phase", "active")
+                   "fail_options", "max_length", "required", "reference_label", "phase", "trace_lots", "active")
 
 
 class EquipmentIn(BaseModel):
@@ -62,6 +62,7 @@ class ScheduleIn(BaseModel):
     fail_options: list[str] | None = None
     max_length: int | None = Field(default=None, ge=1, le=500)
     require_reference: bool = False
+    trace_lots: bool = False
     reference_label: str | None = Field(default=None, max_length=40)
     phase: Literal["start", "finish"] | None = None
     source: str = Field(default="machine_display", pattern="^(machine_display|independent_probe)$")
@@ -105,7 +106,7 @@ class ScheduleIn(BaseModel):
 
 
 def _schedule_values(body: ScheduleIn) -> dict:
-    values = body.model_dump(exclude={"phase", "reference_label"} - body.model_fields_set)
+    values = body.model_dump(exclude={"phase", "reference_label", "active"} - body.model_fields_set)
     values["weekdays"] = ",".join(str(d) for d in sorted(set(body.weekdays))) if body.weekdays else None
     return values
 
@@ -217,6 +218,51 @@ def update_schedule(schedule_id: int, body: ScheduleIn, user: User = Depends(req
     return schedule_out(sched)
 
 
+class ActiveIn(BaseModel):
+    active: bool
+
+
+@router.put("/schedules/{schedule_id}/active")
+def set_schedule_active(schedule_id: int, body: ActiveIn, user: User = Depends(require("equipment.manage")),
+                        db: Session = Depends(get_db)):
+    sched = db.get(EquipmentSchedule, schedule_id)
+    if not sched:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
+    _get(db, user, sched.equipment_id)
+    before = sched.active
+    sched.active = body.active
+    audit(db, user, "equipment.schedule_active", "equipment_schedule", sched.id, {"active": before}, {"active": body.active})
+    db.commit()
+    return schedule_out(sched)
+
+
+@router.delete("/schedules/{schedule_id}")
+def delete_schedule(schedule_id: int, user: User = Depends(require("equipment.manage")), db: Session = Depends(get_db)):
+    sched = db.get(EquipmentSchedule, schedule_id)
+    if not sched:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
+    _get(db, user, sched.equipment_id)
+    if db.scalar(select(TemperatureReading.id).where(TemperatureReading.schedule_id == sched.id).limit(1)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "This check has recorded readings; make it inactive instead")
+    audit(db, user, "equipment.schedule_delete", "equipment_schedule", sched.id, _schedule_snapshot(sched), None)
+    db.delete(sched)
+    db.commit()
+    return {"deleted": schedule_id}
+
+
+@router.delete("/{equipment_id}")
+def delete_equipment(equipment_id: int, user: User = Depends(require("equipment.manage")), db: Session = Depends(get_db)):
+    eq = _get(db, user, equipment_id)
+    if db.scalar(select(TemperatureReading.id).where(TemperatureReading.equipment_id == eq.id).limit(1)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "This monitoring point has recorded readings; make it inactive instead")
+    audit(db, user, "equipment.delete", "equipment", eq.id, {k: getattr(eq, k) for k in EQUIPMENT_FIELDS}, None)
+    for sched in db.scalars(select(EquipmentSchedule).where(EquipmentSchedule.equipment_id == eq.id)):
+        db.delete(sched)
+    db.delete(eq)
+    db.commit()
+    return {"deleted": equipment_id}
+
+
 class FromTemplateIn(BaseModel):
     template: str
     location_id: int
@@ -272,6 +318,7 @@ class FieldIn(BaseModel):
     fail_options: list[str] | None = None
     max_length: int | None = Field(default=None, ge=1, le=500)
     require_reference: bool = False
+    trace_lots: bool = False
 
 
 class FrequencyIn(BaseModel):
@@ -329,7 +376,7 @@ def _schedules_for(form: FormIn) -> list[dict]:
     for slot in slots:
         for f in form.fields:
             title = " ".join(f.title.split())
-            check = ScheduleIn(stage=title, parameter=title, unit=f.unit, value_type=f.value_type, require_reference=f.require_reference,
+            check = ScheduleIn(stage=title, parameter=title, unit=f.unit, value_type=f.value_type, require_reference=f.require_reference, trace_lots=f.trace_lots,
                                source="machine_display", weekdays=freq.weekdays if freq.mode == "weekly" else None,
                                day_of_month=freq.day_of_month if freq.mode == "monthly" else None, min_value=f.min_value,
                                max_value=f.max_value, options=f.options, fail_options=f.fail_options, max_length=f.max_length, required=f.required, **slot)

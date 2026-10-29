@@ -100,6 +100,9 @@ class Shift(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+CYCLE_EPOCH = date(2020, 1, 6)  # a Monday: the first week of every roster cycle
+
+
 class ShiftAssignment(Base):
     __tablename__ = "shift_assignment"
     __table_args__ = (UniqueConstraint("employee_id", "shift_id", "location_id", "weekday", "valid_from"),)
@@ -110,6 +113,13 @@ class ShiftAssignment(Base):
     weekday: Mapped[int] = mapped_column(Integer)
     valid_from: Mapped[date] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
+    cycle_weeks: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # 1 = every week, 2 = alternate weeks
+    cycle_week: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # which week of the cycle, counted from CYCLE_EPOCH
+
+    def applies_on(self, day: date) -> bool:
+        """Whether this weekly assignment falls on `day`: the weekday, the dates it is valid for and the week of its cycle."""
+        return (self.weekday == day.weekday() and self.valid_from <= day and (self.valid_to is None or self.valid_to >= day)
+                and ((day - CYCLE_EPOCH).days // 7) % self.cycle_weeks == self.cycle_week)
 
 
 class AttendanceRecord(Base):
@@ -134,10 +144,25 @@ class AttendanceRecord(Base):
     check_out_geo: Mapped[dict | None] = mapped_column(JSON)
     check_in_face: Mapped[float | None] = mapped_column(Float)  # distance from the enrolled face at check-in
     check_out_face: Mapped[float | None] = mapped_column(Float)
+    check_in_snapshot: Mapped[str | None] = mapped_column(String(60))  # file name in the faces folder, taken at the live check
+    check_out_snapshot: Mapped[str | None] = mapped_column(String(60))
 
     @property
     def geo_flags(self) -> list[str]:
         return [f for geo in (self.check_in_geo, self.check_out_geo) if geo for f in geo["flags"]]
+
+
+class FaceChallenge(Base):
+    """A one-use sequence of head turns the camera screen must show before a face check is accepted."""
+
+    __tablename__ = "face_challenge"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employee.id"), index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True)
+    action: Mapped[str] = mapped_column(String(3))  # in | out
+    steps: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = ts(index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class AttendanceCorrection(Base):

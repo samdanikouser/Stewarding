@@ -3,7 +3,7 @@ from sqlalchemy import select
 from app.models import AttendanceCorrection, AuditLog, Notification
 
 from .helpers import MGR, STEWARD, SUP, loc_id
-from .test_absences import emp_id, login_mgr
+from .test_absences import day_row, emp_id, login_mgr
 
 URL = "/api/attendance/manual"
 
@@ -71,3 +71,63 @@ def test_an_absence_must_be_cancelled_before_attendance_is_entered(client, login
     assert manual(client, mgr, db).status_code == 409
     client.post(f"/api/absences/{absence['id']}/void", json={"reason": "Worked after all"}, headers=mgr)
     assert manual(client, mgr, db).status_code == 201
+
+
+def test_a_record_entered_in_error_is_removed_with_a_reason_and_kept_in_the_audit_log(client, login, db, clock):
+    mgr = login(MGR)
+    rec = manual(client, mgr, db).json()
+    url = f"/api/attendance/{rec['id']}/remove"
+    assert client.post(url, json={"reason": "oops"}, headers=mgr).status_code == 422
+    assert client.post(url, json={"reason": "Entered for the wrong day"}, headers=login(SUP)).status_code == 403
+    assert client.post(url, json={"reason": "Entered for the wrong day"}, headers=login(STEWARD)).status_code == 403
+    assert client.post(url, json={"reason": "Entered for the wrong day"}, headers=mgr).json() == {"deleted": rec["id"]}
+    assert client.get("/api/attendance?employee_id=%d" % rec["employee_id"], headers=mgr).json()["items"] == []
+    assert not db.scalars(select(AttendanceCorrection).where(AttendanceCorrection.attendance_id == rec["id"])).all()
+    entry = db.scalars(select(AuditLog).where(AuditLog.action == "attendance.delete")).one()
+    assert entry.before["date"] == "2026-02-27" and entry.after == {"reason": "Entered for the wrong day"}
+    assert client.post(url, json={"reason": "Entered for the wrong day"}, headers=mgr).status_code == 404
+
+
+def test_a_punch_record_can_be_changed_to_a_day_off(client, login, db, clock):
+    mgr = login(MGR)
+    rec = manual(client, mgr, db).json()
+    r = client.post(f"/api/attendance/{rec['id']}/day-off", json={"reason": "Was on his day off"}, headers=mgr)
+    assert r.status_code == 200
+    assert client.get("/api/attendance?employee_id=%d" % rec["employee_id"], headers=mgr).json()["items"] == []
+    days = client.get(f"/api/absences?employee_id={rec['employee_id']}", headers=mgr).json()["items"]
+    assert [(d["local_date"], d["absence_type"]) for d in days] == [("2026-02-27", "day_off")]
+    assert db.scalar(select(AuditLog.id).where(AuditLog.action == "attendance.to_day_off")) is not None
+    assert client.post(f"/api/attendance/{rec['id']}/day-off", json={"reason": "Was on his day off"}, headers=mgr).status_code == 404
+
+
+def test_working_at_another_outlet_is_not_absent_where_the_person_was_rostered(client, login, db, clock):
+    from datetime import date, datetime
+
+    from app.models import AttendanceRecord
+
+    mgr = login(MGR)
+    clock.set(2026, 3, 2, 12, 0)
+    eid = emp_id(client, login_mgr(client), "E004")
+    before = day_row(client, mgr, db)
+    db.add(AttendanceRecord(employee_id=eid, location_id=loc_id(db, "RB"), local_date=date(2026, 3, 2),
+                            check_in_at=datetime(2026, 3, 2, 6, 0), check_out_at=datetime(2026, 3, 2, 10, 0), payable_minutes=240))
+    db.commit()
+    after = day_row(client, mgr, db)
+    assert before["elsewhere"] is None and after["elsewhere"] == "Rooftop Bar"
+    url = f"/api/reports/records/attendance?date_from=2026-03-02&date_to=2026-03-02&location_id={loc_id(db, 'MK')}"
+    rows = [r for g in client.get(url, headers=mgr).json()["groups"] for r in g["rows"] if r["employee"] == "Sid Steward"]
+    assert [r["status"] for r in rows] == ["Worked elsewhere"] and rows[0]["note"] == "Worked at Rooftop Bar"
+
+
+def test_a_punch_older_than_the_leave_window_cannot_be_changed_to_a_day_off(client, login, db, clock):
+    from datetime import date, datetime
+
+    from app.models import AttendanceRecord
+
+    mgr = login(MGR)
+    eid = emp_id(client, login_mgr(client), "E004")
+    old = AttendanceRecord(employee_id=eid, location_id=loc_id(db, "MK"), local_date=date(2026, 1, 1),
+                           check_in_at=datetime(2026, 1, 1, 6, 0), check_out_at=datetime(2026, 1, 1, 14, 0), payable_minutes=480)
+    db.add(old)
+    db.commit()
+    assert client.post(f"/api/attendance/{old.id}/day-off", json={"reason": "Was on his day off"}, headers=mgr).status_code == 400

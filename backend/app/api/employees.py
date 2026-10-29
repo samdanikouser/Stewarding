@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
-from sqlalchemy import asc, desc, or_, select
+from sqlalchemy import asc, delete, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,8 +13,9 @@ from .. import timeutil
 from ..audit import audit
 from ..db import get_db
 from ..deps import check_location, permissions_of, require, scoped_locations
-from ..models import (AttendanceRecord, ChecklistInstance, Employee, EmployeeLocation, Location, Role, User)
+from ..models import (AttendanceRecord, ChecklistInstance, Employee, EmployeeLocation, Location, Notification, Role, ShiftAssignment, User)
 from ..pagination import iso, paginate, row
+from ..services.deletion import blockers
 from ..security import check_password_rules, hash_password, temporary_password
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
@@ -67,7 +68,7 @@ class EmployeeIn(BaseModel):
     emergency_contact: str | None = Field(default=None, max_length=200)
     date_joined: date | None = None
     supervisor_id: int | None = None
-    location_ids: list[int] = Field(min_length=1)
+    location_ids: list[int] = Field(default_factory=list)  # none chosen: not tied to an outlet, so every location
     weekly_schedule: dict | None = None
 
     _names = field_validator("full_name", "job_title")(_name)
@@ -95,7 +96,7 @@ class EmployeeUpdate(BaseModel):
     emergency_contact: str | None = Field(default=None, max_length=200)
     date_joined: date | None = None
     supervisor_id: int | None = None
-    location_ids: list[int] | None = Field(default=None, min_length=1)
+    location_ids: list[int] | None = None
     weekly_schedule: dict | None = None
 
     _names = field_validator("full_name", "job_title")(_name)
@@ -132,7 +133,7 @@ def _get_visible(db: Session, user: User, employee_id: int) -> Employee:
     if not emp:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found")
     allowed = scoped_locations(user, db)
-    if allowed is not None and not (set(_location_ids(emp)) & allowed):
+    if allowed is not None and emp.locations and not (set(_location_ids(emp)) & allowed):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Employee is outside your locations")
     return emp
 
@@ -162,7 +163,7 @@ def list_employees(
             subq = subq.where(EmployeeLocation.location_id.in_(allowed))
         if location_id is not None:
             subq = subq.where(EmployeeLocation.location_id == location_id)
-        stmt = stmt.where(Employee.id.in_(subq))
+        stmt = stmt.where(or_(Employee.id.in_(subq), Employee.id.not_in(select(EmployeeLocation.employee_id))))  # no outlet = everywhere
     if search:
         like = f"%{search.strip()}%"
         stmt = stmt.where(or_(Employee.full_name.ilike(like), Employee.employee_code.ilike(like), Employee.company.ilike(like)))
@@ -185,7 +186,7 @@ def _assignable_role(db: Session, actor: User, name: str) -> Role:
     return role
 
 
-def _next_code(db: Session) -> str:
+def next_code(db: Session) -> str:
     """E followed by the next number after the highest existing E-number, such as E007."""
     numbers = [int(code[1:]) for code in db.scalars(select(Employee.employee_code).where(Employee.employee_code.like("E%"))) if code[1:].isdigit()]
     return f"E{max(numbers, default=0) + 1:03d}"
@@ -193,7 +194,8 @@ def _next_code(db: Session) -> str:
 
 @router.post("", status_code=201)
 def create_employee(body: EmployeeIn, user: User = Depends(require("employee.manage")), db: Session = Depends(get_db)):
-    _validate_refs(db, body.location_ids, body.supervisor_id)
+    location_ids = body.location_ids
+    _validate_refs(db, location_ids, body.supervisor_id)
     role = _assignable_role(db, user, body.role)
     try:
         account = User(email=str(body.email).lower(), password_hash=hash_password(body.password), role_id=role.id,
@@ -201,10 +203,10 @@ def create_employee(body: EmployeeIn, user: User = Depends(require("employee.man
         db.add(account)
         db.flush()
         emp = Employee(
-            employee_code=body.employee_code or _next_code(db), user_id=account.id, full_name=body.full_name, job_title=body.job_title, company=body.company,
+            employee_code=body.employee_code or next_code(db), user_id=account.id, full_name=body.full_name, job_title=body.job_title, company=body.company,
             email=str(body.email).lower(), phone=body.phone, emergency_contact=body.emergency_contact,
             date_joined=body.date_joined, supervisor_id=body.supervisor_id, weekly_schedule=body.weekly_schedule)
-        emp.locations = [EmployeeLocation(location_id=i) for i in set(body.location_ids)]
+        emp.locations = [EmployeeLocation(location_id=i) for i in set(location_ids)]
         db.add(emp)
         db.flush()
     except IntegrityError:
@@ -348,3 +350,26 @@ def history(employee_id: int, user: User = Depends(require("attendance.view")), 
                            "payable_minutes", "overtime_minutes") for r in records],
         "tasks_completed": len(tasks),
     }
+
+
+@router.delete("/{employee_id}")
+def delete_employee(employee_id: int, user: User = Depends(require("employee.manage")), db: Session = Depends(get_db)):
+    """Removes an employee added by mistake with their roster entries and alerts; anyone with real history is refused and should be deactivated instead."""
+    emp = _get_visible(db, user, employee_id)
+    if emp.user_id == user.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
+    account = emp.user
+    used = blockers(db, emp, frozenset({"employee_location", "shift_assignment"})) + (blockers(db, account, frozenset({"employee", "notification"})) if account else [])
+    if used:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"{emp.full_name} is used by {', '.join(dict.fromkeys(used))}; deactivate them instead")
+    before = {"employee_code": emp.employee_code, "full_name": emp.full_name, "email": emp.email}
+    db.execute(delete(EmployeeLocation).where(EmployeeLocation.employee_id == emp.id))
+    db.execute(delete(ShiftAssignment).where(ShiftAssignment.employee_id == emp.id))
+    db.delete(emp)
+    db.flush()
+    if account:
+        db.execute(delete(Notification).where(Notification.user_id == account.id))
+        db.delete(account)
+    audit(db, user, "employee.delete", "employee", employee_id, before, None)
+    db.commit()
+    return {"deleted": employee_id}

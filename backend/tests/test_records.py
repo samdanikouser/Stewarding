@@ -9,6 +9,8 @@ from .helpers import loc_id
 from .test_approvals import SUP_RB, complete, verify
 from .test_checklists import MGR, STEWARD, SUP, find, generate
 from .test_monitoring import mk_stage, record
+from .test_traceability import food, receive
+from .test_two_step_logs import make
 
 URL = "/api/reports/records"
 
@@ -180,16 +182,16 @@ def test_receipts_record_totals_discounts_and_supplier_filter(client, login, db,
     group = doc["groups"][0]
     first = next(r for r in group["rows"] if r["invoice"] == "R-1")
     assert (first["supplier"], first["qty"], first["unit_cost"], first["discount"], first["line_total"], first["received_by"]) == (
-        "Gulf Catering Supplies", 10, "5.00", "5.00", "45.00", "Sam Supervisor")
+        "Gulf Catering Supplies", 10, "5.000", "5.000", "45.000", "Sam Supervisor")
     totals = dict(group["totals"])
-    assert totals["Documents"] == 2 and totals["Sub total"] == "60.00" and totals["Total discount"] == "5.00" and totals["Invoice total (posted receipts)"] == "55.00"
+    assert totals["Documents"] == 2 and totals["Sub total"] == "60.000" and totals["Total discount"] == "5.000" and totals["Invoice total (posted receipts)"] == "55.000"
     gulf = suppliers(client)["Gulf Catering Supplies"]
     filtered = get(client, mgr, "receipts", supplier_id=gulf, location_id=loc_id(db, "MK")).json()
     assert {r["invoice"] for g in filtered["groups"] for r in g["rows"]} == {"R-1"}
     rec = next(r["id"] for r in client.get("/api/receipts", headers=mgr).json()["items"] if r["invoice_number"] == "R-1")
     client.post(f"/api/receipts/{rec}/void", json={"reason": "Entered by mistake"}, headers=mgr)
     after = dict(get(client, mgr, "receipts", location_id=loc_id(db, "MK")).json()["groups"][0]["totals"])
-    assert after["Invoice total (posted receipts)"] == "10.00"
+    assert after["Invoice total (posted receipts)"] == "10.000"
 
 
 def test_movements_record_filters_by_type_and_totals_in_and_out(client, login, db, clock):
@@ -250,3 +252,111 @@ def test_the_report_header_gives_name_and_position_separately(client, login, db,
     assert ("Prepared by", "Maya Manager") in cells and ("Position", "Back of House Manager") in cells
     summary = client.get("/api/reports/daily/export?fmt=csv", headers=login(MGR)).content.decode("utf-8-sig").splitlines()
     assert "Prepared by,Maya Manager" in summary and "Position,Back of House Manager" in summary
+
+
+def rec(client, h, kind, **params):
+    query = "&".join(f"{k}={v}" for k, v in {"date_from": "2026-03-02", "date_to": "2026-03-02", **params}.items())
+    return client.get(f"{URL}/{kind}?{query}", headers=h)
+
+
+def test_the_monitoring_record_filters_by_result_and_approval(client, login, db, clock):
+    seed_readings(client, login)
+    m = login(MGR)
+
+    def checks(status):
+        doc = monitoring(client, m, location_id=loc_id(db, "MK"), status=status).json()
+        return [r["check"] for g in doc["groups"] for r in g["rows"]], len(doc["groups"])
+
+    assert checks("failed") == (["Final rinse"], 1)
+    assert checks("passed") == (["Wash"], 1)
+    assert checks("awaiting") == (["Final rinse"], 1)
+    assert monitoring(client, m, status="nonsense").status_code == 400
+
+
+def test_the_attendance_record_filters_by_status(client, login, db, clock):
+    client.post("/api/attendance/check-in", json={"location_id": loc_id(db, "MK")}, headers=login(STEWARD))
+    mgr = login(MGR)
+    emp = next(e["id"] for e in client.get("/api/employees?size=50", headers=mgr).json()["items"] if e["employee_code"] == "E005")
+    client.post("/api/absences", json={"employee_id": emp, "location_id": loc_id(db, "BQ"), "day": "2026-03-02", "absence_type": "sick_leave"}, headers=mgr)
+    clock.advance(hours=10)
+
+    def people(status):
+        doc = rec(client, mgr, "attendance", status=status).json()
+        return {r["employee"] for g in doc["groups"] for r in g["rows"]}
+
+    assert people("leave") == {"Bina Steward"}
+    assert "Sid Steward" in people("present") and "Bina Steward" not in people("present")
+    assert "Sid Steward" not in people("absent") and "Bina Steward" not in people("absent")
+    assert rec(client, mgr, "attendance", status="nonsense").status_code == 400
+
+
+def test_the_lot_register_lists_received_lots_and_filters_by_group_supplier_and_status(client, login, db, clock):
+    m, sup = login(MGR), login(SUP)
+    chicken, salmon = food(client, m), food(client, m, "Salmon fillet", "seafood")
+    other = client.post("/api/suppliers", headers=m, json={"name": "Gulf Seafood"}).json()["id"]
+    receive(client, sup, db, chicken, supplier_lot="B1", qty=20, unit="kg")
+    receive(client, sup, db, salmon, supplier_lot="S1", temp_c=9, supplier_id=other)
+
+    def codes(**params):
+        doc = rec(client, m, "lots", **params).json()
+        return [r["lot"] for g in doc["groups"] for r in g["rows"]]
+
+    doc = rec(client, m, "lots").json()
+    assert doc["title"] == "Lot Register" and codes() == ["B1", "S1"]
+    first, second = doc["groups"][0]["rows"]
+    assert (first["food"], first["quantity"], first["status"]) == ("Chicken breast", "20.00 kg", "Active")
+    assert (second["supplier"], second["arrival_temp"], second["status"]) == ("Gulf Seafood", "9.0 C", "On hold")
+    assert dict(doc["groups"][0]["totals"]) == {"Lots": 2, "Active": 1, "Used up": 0, "Discarded": 0, "On hold": 1}
+    assert codes(food_group="seafood") == ["S1"] and codes(status="on_hold") == ["S1"] and codes(supplier_id=other) == ["S1"]
+    assert codes(food_group="seafood", status="active") == []
+    assert rec(client, m, "lots", food_group="nonsense").status_code == 400
+    assert rec(client, m, "lots", status="nonsense").status_code == 400
+    assert rec(client, m, "receipts", status="active").status_code == 400
+    assert b"B1" in client.get(f"{URL}/lots/export?fmt=csv&date_from=2026-03-02&date_to=2026-03-02", headers=m).content
+
+
+def test_the_monitoring_record_filters_by_point_type_and_one_point_across_locations(client, login, db, clock):
+    m = login(MGR)
+    make(client, m, db, "cooling")
+    make(client, m, db, "cooling", "BQ")
+    make(client, m, db, "defrosting")
+
+    def groups(**params):
+        return monitoring(client, m, **params).json()["groups"]
+
+    cooling = groups(equipment_kind="Cooling")
+    assert len(cooling) == 2 and {dict(g["meta"])["Type"] for g in cooling} == {"Cooling"}
+    assert {dict(g["meta"])["Location"] for g in cooling} == {"Main Kitchen", "Banquet Hall"}
+    assert {dict(g["meta"])["Type"] for g in groups(equipment_kind="Cooling", location_id=loc_id(db, "BQ"))} == {"Cooling"}
+    assert len(groups(equipment_kind="Cooling", location_id=loc_id(db, "BQ"))) == 1
+    assert groups(equipment_kind="Nothing like this") == []
+    point = next(e for e in client.get("/api/equipment", headers=m).json() if e["kind"] == "Defrosting")
+    only = groups(equipment_id=point["id"])
+    assert len(only) == 1 and dict(only[0]["meta"])["Monitoring point"].endswith(f"({point['code']})")
+    assert len(groups()) > 4
+
+
+def test_the_checklist_record_filters_by_checklist(client, login, db, clock):
+    generate(client, login, db)
+    m = login(MGR)
+    templates = client.get(f"/api/checklists/templates?location_id={loc_id(db, 'MK')}", headers=m).json()
+    daily = next(t for t in templates if t["frequency"] == "daily")
+    everything = get(client, m, "checklists", location_id=loc_id(db, "MK")).json()["groups"]
+    only = get(client, m, "checklists", location_id=loc_id(db, "MK"), template_id=daily["id"]).json()["groups"]
+    assert len(everything) > len(only) >= 1
+    assert all(daily["name"] in g["title"] for g in only)
+    assert get(client, m, "checklists", template_id=999999).json()["groups"] == []
+
+
+def test_the_checklist_chart_filters_by_checklist(client, login, db, clock):
+    generate(client, login, db)
+    m = login(MGR)
+    templates = client.get(f"/api/checklists/templates?location_id={loc_id(db, 'MK')}", headers=m).json()
+    daily = next(t for t in templates if t["frequency"] == "daily")
+
+    def titles(**params):
+        return [g["title"] for g in get(client, m, "checklist_chart", location_id=loc_id(db, "MK"), **params).json()["groups"]]
+
+    everything, only = titles(), titles(template_id=daily["id"])
+    assert len(everything) > len(only) >= 1 and all(daily["name"] in t for t in only)
+    assert titles(template_id=999999) == []

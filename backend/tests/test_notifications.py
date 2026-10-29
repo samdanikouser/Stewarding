@@ -85,6 +85,7 @@ def test_notification_events_are_deduplicated_per_recipient(client, login, db):
 
 
 def test_pending_summary_is_grouped_scoped_and_permissioned(client, login, db, clock):
+    client.put("/api/settings", json={"values": {"checklist.grace_minutes": 0}}, headers=login(MGR))
     client.post("/api/checklists/generate", json={"location_id": loc_id(db, "MK")}, headers=login(MGR))
     clock.set(2026, 3, 2, 9, 40)  # 13:40 Dubai: daily tasks are 10 minutes overdue, temperature checks overdue
     assert client.get("/api/notifications/pending-summary", headers=login(STEWARD)).status_code == 403
@@ -125,4 +126,4 @@ def test_pending_summary_lists_verification_breakage_and_transfers(client, login
 
 def test_run_alerts_returns_counts(db, clock):
     totals = run_alerts(db, clock.now)
-    assert set(totals) == {"checkins", "checklists", "monitoring", "summary", "checkouts", "corrective", "low_stock", "pending_time_outs"}
+    assert set(totals) == {"checkins", "checklists", "monitoring", "summary", "checkouts", "corrective", "low_stock", "pending_time_outs", "closed", "rounds"}

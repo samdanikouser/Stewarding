@@ -15,8 +15,9 @@ def enroll(client, login, descriptor, code="E004"):
     return client.post(f"/api/employees/{emp_id(client, login_mgr(client), code)}/face", json={"descriptor": descriptor}, headers=login(MGR))
 
 
-def turn_on(client, login, limit=45):
-    return client.put("/api/settings", json={"values": {"attendance.face_required": 1, "attendance.face_match_max": limit}}, headers=login(MGR))
+def turn_on(client, login, limit=45, live=0):
+    values = {"attendance.face_required": 1, "attendance.face_match_max": limit, "attendance.face_liveness": live}
+    return client.put("/api/settings", json={"values": values}, headers=login(MGR))
 
 
 def test_only_a_manager_enrolls_a_valid_template_and_it_is_never_returned(client, login, db, clock):

@@ -147,7 +147,7 @@ def sec_breakage_log(c: Ctx) -> dict:
     counted = [r for r in rows if r["status"] != "rejected"]
     return section("breakage", "Breakage and damage incidents", cols, rows,
                    [("Incidents (excluding rejected)", len(counted)), ("Units", sum(r["qty"] for r in counted)),
-                    ("Estimated cost", round(sum(r["cost"] or 0 for r in counted), 2))])
+                    ("Estimated cost", round(sum(r["cost"] or 0 for r in counted), 3))])
 
 
 def sec_inventory_movements(c: Ctx) -> dict:
@@ -157,7 +157,7 @@ def sec_inventory_movements(c: Ctx) -> dict:
                 StockTransaction.location_id == w.loc.id, StockTransaction.occurred_at >= w.start,
                 StockTransaction.occurred_at < w.end).order_by(StockTransaction.id)):
             rows.append({"time": local(t.occurred_at, w.loc.timezone), "location": w.loc.name, "item": c.items[t.item_id].name,
-                         "type": t.txn_type, "qty": t.qty_delta, "by": c.names_by_user.get(t.user_id), "reason": t.reason})
+                         "type": metrics.movement_kind(t.txn_type, t.ref_type), "qty": t.qty_delta, "by": c.names_by_user.get(t.user_id), "reason": t.reason})
     totals = defaultdict(int)
     for r in rows:
         totals[r["type"]] += r["qty"]
@@ -253,10 +253,10 @@ def sec_breakage_summary(c: Ctx) -> dict:
         e["cost"] += float(i.est_cost or 0)
     rows = sorted(by_item.values(), key=lambda r: -r["qty"])
     for r in rows:
-        r["cost"] = round(r["cost"], 2)
+        r["cost"] = round(r["cost"], 3)
     return section("breakage_summary", "Breakage and damage by item",
                    [("item", "Item"), ("incidents", "Incidents"), ("qty", "Units"), ("cost", "Estimated cost")], rows,
-                   [("Units", sum(r["qty"] for r in rows)), ("Estimated cost", round(sum(r["cost"] for r in rows), 2))])
+                   [("Units", sum(r["qty"] for r in rows)), ("Estimated cost", round(sum(r["cost"] for r in rows), 3))])
 
 
 def sec_inventory_variance(c: Ctx) -> dict:
@@ -274,6 +274,7 @@ def sec_inventory_variance(c: Ctx) -> dict:
 
 def sec_attendance_hours(c: Ctx) -> dict:
     agg: dict[str, Counter] = defaultdict(Counter)
+    counted: set = set()  # a day worked at two outlets is one day
     for w in c.wins:
         for r in metrics.attendance_stats(c.db, w, c.now, c.employee_id)["rows"]:
             a = agg[r["name"]]
@@ -285,7 +286,8 @@ def sec_attendance_hours(c: Ctx) -> dict:
             elif r["status"] == "week_off":
                 a["weekoff"] += 1
             elif r["check_in"]:
-                a["days"] += 1
+                a["days"] += 0 if (r["name"], r["day"]) in counted else 1
+                counted.add((r["name"], r["day"]))
                 a["minutes"] += r["payable_minutes"] or 0
                 a["overtime"] += r["overtime_minutes"] or 0
                 a["late"] += 1 if r["late_minutes"] > 0 else 0
@@ -346,7 +348,7 @@ def sec_stock_consumption(c: Ctx) -> dict:
             a["transfer_in"] += t.qty_delta
         elif t.txn_type == "transfer_out":
             a["transfer_out"] += -t.qty_delta
-        elif t.txn_type == "receipt":
+        elif t.txn_type in ("receipt", "receipt_void"):
             a["received"] += t.qty_delta
     rows = [{"location": loc, "item": item, **{k: a[k] for k in ("received", "consumed", "transfer_in", "transfer_out")}}
             for (loc, item), a in sorted(agg.items())]
@@ -392,7 +394,7 @@ def sec_scorecard(c: Ctx) -> dict:
         rows.append({"location": w.loc.name, "attendance": ratio(att["present"], att["scheduled"]),
                      "checklists": ratio(chk["numerator"], chk["denominator"]), "monitoring": ratio(tmp["done"], tmp["due"]),
                      "failed": tmp["failed"], "breakage": sum(i.qty for i in incidents),
-                     "breakage_cost": round(sum(float(i.est_cost or 0) for i in incidents), 2),
+                     "breakage_cost": round(sum(float(i.est_cost or 0) for i in incidents), 3),
                      "low_stock": sum(1 for i in snap["low"] if i["location_id"] == w.loc.id), "open_issues": len(issues)})
     return section("scorecard", "Location operational scorecard",
                    [("location", "Location"), ("attendance", "Attendance"), ("checklists", "Checklists"),

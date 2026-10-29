@@ -44,6 +44,7 @@ def test_a_form_becomes_a_point_per_location_with_a_check_per_field_and_time(cli
 
 
 def test_every_field_is_recorded_together_and_judged_by_its_own_rules(client, login, db, clock):
+    clock.set(2026, 3, 2, 8, 30)
     point = build(client, login(MGR), db).json()["points"][0]
     steward = login(STEWARD)
     noon = {s["stage"]: s for s in point["schedules"] if str(s["time_of_day"]).startswith("12:00")}
@@ -58,6 +59,7 @@ def test_every_field_is_recorded_together_and_judged_by_its_own_rules(client, lo
 
 
 def test_a_failing_choice_opens_a_corrective_action(client, login, db, clock):
+    clock.set(2026, 3, 2, 8, 30)
     point = build(client, login(MGR), db).json()["points"][0]
     steward = login(STEWARD)
     noon = {s["stage"]: s for s in point["schedules"] if str(s["time_of_day"]).startswith("12:00")}
@@ -71,6 +73,7 @@ def test_a_failing_choice_opens_a_corrective_action(client, login, db, clock):
 
 
 def test_answers_that_break_a_field_s_restrictions_are_refused_and_nothing_is_saved(client, login, db, clock):
+    clock.set(2026, 3, 2, 8, 30)
     point = build(client, login(MGR), db).json()["points"][0]
     steward = login(STEWARD)
     noon = {s["stage"]: s for s in point["schedules"] if str(s["time_of_day"]).startswith("12:00")}
@@ -133,6 +136,7 @@ def test_only_a_manager_creates_forms_and_the_audit_is_kept(client, login, db):
 
 
 def test_the_record_shows_written_answers(client, login, db, clock):
+    clock.set(2026, 3, 2, 8, 30)
     point = build(client, login(MGR), db).json()["points"][0]
     steward = login(STEWARD)
     noon = {s["stage"]: s for s in point["schedules"] if str(s["time_of_day"]).startswith("12:00")}

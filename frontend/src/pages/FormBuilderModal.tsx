@@ -90,41 +90,50 @@ export function FormBuilderModal({ initialLocation, onClose, onCreated }: FormBu
   }
 
   return (
-    <Modal open wide title="Create a log form" onClose={onClose}>
-      <ol className="mb-4 flex gap-2 text-sm" aria-label="Steps">
+    <Modal
+      open
+      size="xl"
+      title="Create a log form"
+      description="A form people fill in for a monitoring point, in three short steps."
+      onClose={onClose}
+      footer={<>
+        <Button type="button" variant="outline" onClick={step === 0 ? onClose : () => { setProblem(null); setStep(step - 1) }}>{step === 0 ? 'Cancel' : 'Back'}</Button>
+        {step < 2 ? <Button type="button" onClick={next}>Next</Button> : <Button type="button" onClick={create}>Create form</Button>}
+      </>}
+    >
+      <ol className="mb-7 flex items-center gap-2 text-sm" aria-label="Steps">
         {STEPS.map((label, i) => (
-          <li key={label} aria-current={i === step ? 'step' : undefined}
-            className={`flex-1 rounded-md px-3 py-2 ${i === step ? 'bg-brand text-brand-ink' : i < step ? 'bg-surface-muted' : 'border border-border text-ink-muted'}`}>
-            {i + 1}. {label}
+          <li key={label} aria-current={i === step ? 'step' : undefined} className="flex flex-1 items-center gap-2">
+            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${i <= step ? 'bg-brand text-brand-ink' : 'border border-border text-ink-muted'}`}>{i + 1}</span>
+            <span className={i === step ? 'font-semibold' : 'text-ink-muted'}>{label}</span>
+            {i < STEPS.length - 1 && <span aria-hidden className="h-px flex-1 bg-border" />}
           </li>
         ))}
       </ol>
 
       {step === 0 && (
-        <div className="space-y-4">
-          <Field label="Form name" hint="What staff will see, for example Cooking log, Freezer check or Goods received.">
+        <div className="space-y-5">
+          <Field label="Form name">
             <Input autoFocus maxLength={120} value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="Kind of log" hint="Used to group forms in reports.">
+          <Field label="Kind of log">
             <Select value={kind} onChange={(e) => setKind(e.target.value)}>
               {[...new Set([...types, 'Other'])].map((t) => <option key={t} value={t}>{t}</option>)}
             </Select>
           </Field>
           <fieldset>
-            <legend className="mb-1 text-sm font-medium">Where is it used?</legend>
-            <div className="flex flex-wrap gap-4">
+            <legend className="mb-2 text-sm font-medium">Where is it used?</legend>
+            <div className="flex flex-wrap gap-2">
               {me?.locations.map((l) => (
-                <label key={l.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={locations.includes(l.id)} onChange={() => setLocations((all) => toggle(all, l.id))} /> {l.name}</label>
+                <label key={l.id} className={`cursor-pointer rounded-full border px-4 py-1.5 text-sm transition-colors ${locations.includes(l.id) ? 'border-brand bg-brand-soft font-semibold text-brand-deep' : 'border-border hover:bg-surface-muted'}`}><input type="checkbox" className="sr-only" checked={locations.includes(l.id)} onChange={() => setLocations((all) => toggle(all, l.id))} /> {l.name}</label>
               ))}
             </div>
-            <p className="mt-1 text-xs text-ink-muted">Each chosen location gets its own copy of the form, so each one keeps its own log.</p>
           </fieldset>
         </div>
       )}
 
       {step === 1 && (
         <div className="space-y-3">
-          <p className="text-sm text-ink-muted">Add the questions staff answer each time. Staff fill all fields together in one entry.</p>
           {fields.map((f, i) => (
             <FieldEditor key={i} index={i} count={fields.length} value={f} onChange={(next) => setField(i, next)}
               onMove={(delta) => moveField(i, delta)} onRemove={() => setFields((all) => all.filter((_, n) => n !== i))} />
@@ -159,7 +168,7 @@ export function FormBuilderModal({ initialLocation, onClose, onCreated }: FormBu
           {mode === 'weekly' && (
             <fieldset>
               <legend className="mb-1 text-sm font-medium">Which days?</legend>
-              <div className="flex flex-wrap gap-3">{DAYS.map((d, i) => <label key={d} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={weekdays.includes(i)} onChange={() => setWeekdays((all) => toggle(all, i))} /> {d}</label>)}</div>
+              <div className="flex flex-wrap gap-2">{DAYS.map((d, i) => <label key={d} className={`cursor-pointer rounded-full border px-4 py-1.5 text-sm transition-colors ${weekdays.includes(i) ? 'border-brand bg-brand-soft font-semibold text-brand-deep' : 'border-border hover:bg-surface-muted'}`}><input type="checkbox" className="sr-only" checked={weekdays.includes(i)} onChange={() => setWeekdays((all) => toggle(all, i))} /> {d}</label>)}</div>
             </fieldset>
           )}
           {mode === 'monthly' && <Field label="Day of the month"><Input type="number" min={1} max={31} className="w-28" value={dayOfMonth} onChange={(e) => setDayOfMonth(e.target.value)} /></Field>}
@@ -182,17 +191,12 @@ export function FormBuilderModal({ initialLocation, onClose, onCreated }: FormBu
                 ))}
                 {times.length < 6 && <Button type="button" variant="outline" size="sm" onClick={() => setTimes((all) => [...all, ''])}><Plus className="h-4 w-4" /> Add another time</Button>}
               </div>
-              <p className="mt-1 text-xs text-ink-muted">Two times a day means staff fill the whole form twice, once for each time.</p>
             </fieldset>
           )}
         </div>
       )}
 
-      {problem && <p role="alert" className="mt-4 rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">{problem}</p>}
-      <div className="mt-5 flex justify-between gap-2">
-        <Button type="button" variant="outline" onClick={step === 0 ? onClose : () => { setProblem(null); setStep(step - 1) }}>{step === 0 ? 'Cancel' : 'Back'}</Button>
-        {step < 2 ? <Button type="button" onClick={next}>Next</Button> : <Button type="button" onClick={create}>Create form</Button>}
-      </div>
+      {problem && <p role="alert" className="mt-5 rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger">{problem}</p>}
     </Modal>
   )
 }

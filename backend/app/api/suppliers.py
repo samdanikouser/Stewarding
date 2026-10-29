@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
+from ..services.deletion import delete_if_unused
 from ..db import get_db
 from ..deps import require
 from ..models import Supplier, User
@@ -74,3 +75,15 @@ def update_supplier(supplier_id: int, body: SupplierUpdate, user: User = Depends
     audit(db, user, "supplier.update", "supplier", supplier.id, before, data)
     db.commit()
     return row(supplier, *FIELDS)
+
+
+@router.delete("/{supplier_id}")
+def delete_supplier(supplier_id: int, user: User = Depends(require("inventory.manage")), db: Session = Depends(get_db)):
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Supplier not found")
+    before = {"name": supplier.name}
+    delete_if_unused(db, supplier, supplier.name)
+    audit(db, user, "supplier.delete", "supplier", supplier_id, before, None)
+    db.commit()
+    return {"deleted": supplier_id}

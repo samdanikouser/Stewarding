@@ -201,3 +201,45 @@ def test_reconciliation_flags_shortages_with_their_value(client, login, db, cloc
     assert row_["count_variance"] == -10 and row_["variance_value"] == -25.0  # 10 x 2.50
     assert doc["variance"]["shortage_items"] == 1 and doc["variance"]["shortage_units"] == 10 and doc["variance"]["net_value"] == -25.0
     assert doc["variance"]["surplus_items"] == 0
+
+
+def test_a_catch_up_transfer_is_dated_on_the_day_the_stock_really_moved(client, login, db, clock):
+    m = login(MGR)
+    body = {"from_location_id": loc_id(db, "MK"), "to_location_id": loc_id(db, "BQ"), "lines": [{"item_id": item_id(db, "PL-001"), "qty": 25}],
+            "note": "Moved by hand", "moved_on": "2026-02-20"}
+    assert client.post("/api/stock/transfers", json=body, headers=login(SUP)).status_code == 403          # only an approver records one
+    done = client.post("/api/stock/transfers", json=body, headers=m)
+    assert done.status_code == 201 and done.json()["status"] == "completed"
+    assert "Catch-up, moved on 2026-02-20" in done.json()["note"] and done.json()["requested_at"].startswith("2026-02-20")
+    assert balance(db, "PL-001", "MK") == 175 and balance(db, "PL-001", "BQ") == 175
+    moved = db.scalars(select(StockTransaction).where(StockTransaction.ref_type == "transfer")).all()
+    assert {t.occurred_at.date().isoformat() for t in moved} == {"2026-02-20"}                            # the ledger carries that day, not today
+    assert client.post("/api/stock/transfers", json={**body, "moved_on": "2025-01-01"}, headers=m).status_code == 400   # too long ago
+    assert client.post("/api/stock/transfers", json={**body, "moved_on": "2026-03-09"}, headers=m).status_code == 400   # in the future
+    # the stock count then sees it as received at the other place
+    limits = {l["item_id"]: l for l in client.get(f"/api/stock/count-limits?location_id={loc_id(db, 'BQ')}", headers=m).json()}
+    assert limits[item_id(db, "PL-001")]["transfers_in"] >= 25
+
+
+def test_a_catch_up_cannot_be_dated_before_a_count_that_was_already_posted(client, login, db, clock):
+    m = login(MGR)
+    mk = loc_id(db, "MK")
+    count = client.post("/api/stock/counts", json={"location_id": mk, "lines": [{"item_id": item_id(db, "PL-001"), "counted_qty": 200}]}, headers=m).json()
+    assert client.post(f"/api/stock/counts/{count['id']}/post", headers=m).status_code == 200
+    body = {"from_location_id": mk, "to_location_id": loc_id(db, "BQ"), "lines": [{"item_id": item_id(db, "PL-001"), "qty": 5}], "moved_on": "2026-02-01"}
+    assert client.post("/api/stock/transfers", json=body, headers=m).status_code == 409
+
+
+def test_a_count_in_progress_is_saved_per_person_and_cleared_when_the_count_is_saved(client, login, db, clock):
+    m, sup = login(MGR), login(SUP)
+    mk, pl = loc_id(db, "MK"), item_id(db, "PL-001")
+    assert client.get(f"/api/stock/count-draft?location_id={mk}", headers=m).json()["entries"] == {}
+    saved = client.put("/api/stock/count-draft", json={"location_id": mk, "entries": {str(pl): {"qty": "150", "reason": ""}}}, headers=m)
+    assert saved.json() == {"saved": 1}
+    assert client.get(f"/api/stock/count-draft?location_id={mk}", headers=m).json()["entries"][str(pl)]["qty"] == "150"
+    assert client.get(f"/api/stock/count-draft?location_id={mk}", headers=sup).json()["entries"] == {}      # someone else's is separate
+    client.post("/api/stock/counts", json={"location_id": mk, "lines": [{"item_id": pl, "counted_qty": 150}]}, headers=m)
+    assert client.get(f"/api/stock/count-draft?location_id={mk}", headers=m).json()["entries"] == {}        # saved for real: working copy gone
+    client.put("/api/stock/count-draft", json={"location_id": mk, "entries": {str(pl): {"qty": "9", "reason": ""}}}, headers=m)
+    client.put("/api/stock/count-draft", json={"location_id": mk, "entries": {str(pl): {"qty": "", "reason": ""}}}, headers=m)   # emptied
+    assert client.get(f"/api/stock/count-draft?location_id={mk}", headers=m).json()["entries"] == {}

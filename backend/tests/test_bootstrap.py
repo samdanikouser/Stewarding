@@ -11,7 +11,7 @@ def test_bootstrap_creates_a_working_manager_with_all_permissions(client, db):
     r = client.post("/api/auth/login", json={"email": "owner@example.com", "password": "a-strong-password-1"})
     assert r.status_code == 200
     me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).json()
-    assert me["role"] == "manager" and len(me["modules"]) == 14 and "checklists" in {m["key"] for m in me["modules"]} and len(me["locations"]) == 3
+    assert me["role"] == "manager" and len(me["modules"]) == 18 and "checklists" in {m["key"] for m in me["modules"]} and len(me["locations"]) == 3
 
 
 def test_bootstrap_rejects_weak_passwords_and_duplicates(db):

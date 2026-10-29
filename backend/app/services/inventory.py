@@ -38,6 +38,25 @@ def below_minimum(locations: set[int] | None = None):
     return stmt if locations is None else stmt.where(InventoryBalance.location_id.in_(locations))
 
 
+def unheld_items(db: Session) -> list[InventoryItem]:
+    """Active items with a minimum that no location has ever held: they have no balance row, so nothing else reports them."""
+    held = select(InventoryBalance.item_id).where(InventoryBalance.item_id == InventoryItem.id).exists()
+    return list(db.scalars(select(InventoryItem).where(InventoryItem.active.is_(True), InventoryItem.min_level > 0, ~held)
+                           .order_by(InventoryItem.code)))
+
+
+def places_in(db: Session, locations: set[int] | None) -> list[int]:
+    """Ids of the active locations, limited to `locations` when given."""
+    return [i for i in db.scalars(select(Location.id).where(Location.active.is_(True)).order_by(Location.id)) if locations is None or i in locations]
+
+
+def shortage_rows(db: Session, locations: set[int] | None = None) -> list[tuple[InventoryBalance, InventoryItem, int]]:
+    """Every item below its minimum at a location, and each item never stocked anywhere as an empty row at every location."""
+    rows = [(b, i, m) for b, i, m in db.execute(below_minimum(locations))]
+    places = places_in(db, locations)
+    return rows + [(InventoryBalance(item_id=i.id, location_id=p, qty=0), i, i.min_level) for i in unheld_items(db) for p in places]
+
+
 @event.listens_for(InventoryItem, "before_insert")
 @event.listens_for(InventoryItem, "before_update")
 def _set_search_keys(_mapper, _connection, item: InventoryItem) -> None:
@@ -76,7 +95,7 @@ def _costed(item: InventoryItem, balance: InventoryBalance, delta: int, unit_cos
 def post_txn(db: Session, user: User, item: InventoryItem, location_id: int, txn_type: str, qty: int,
              reason: str | None = None, ref_type: str | None = None, ref_id: int | None = None,
              allow_negative: bool = False, unit_cost: Decimal | None = None,
-             reverse_cost: Decimal | None = None) -> StockTransaction:
+             reverse_cost: Decimal | None = None, occurred_at: datetime | None = None) -> StockTransaction:
     """Appends one immutable ledger row, valued at the weighted average cost, and moves the balance in the caller's transaction."""
     delta = qty if txn_type == "adjustment" else SIGN[txn_type] * abs(qty)
     if delta == 0:
@@ -91,12 +110,19 @@ def post_txn(db: Session, user: User, item: InventoryItem, location_id: int, txn
     cost = _costed(item, balance, delta, unit_cost, reverse_cost)
     balance.qty += delta
     txn = StockTransaction(item_id=item.id, location_id=location_id, txn_type=txn_type, qty_delta=delta,
-                           occurred_at=timeutil.utc_now(), user_id=user.id, reason=reason, ref_type=ref_type,
+                           occurred_at=occurred_at or timeutil.utc_now(), user_id=user.id, reason=reason, ref_type=ref_type,
                            ref_id=ref_id, unit_cost=cost)
     db.add(txn)
     db.flush()
     level = db.get(InventoryLevel, (item.id, location_id))
     minimum = level.min_level if level else item.min_level
+    if delta < 0 and balance.qty < 0:
+        place = db.get(Location, location_id).name
+        notify(db, recipients(db, location_id, SUPERVISOR, MANAGER), "negative_stock",
+               f"Stock below zero: {item.name} is {balance.qty} at {place}",
+               key=f"negative:{item.id}:{location_id}:{timeutil.utc_now().date().isoformat()}", priority="high",
+               location_id=location_id, link="/inventory", requires_ack=True,
+               body="More was written off than the books show. Check the count and the receipts.")
     if delta < 0 and balance.qty < minimum:
         notify(db, recipients(db, location_id, SUPERVISOR, MANAGER), "low_stock",
                f"Low stock: {item.name} ({balance.qty} left, minimum {minimum})",
@@ -136,6 +162,18 @@ def received_to_date(db: Session, location_id: int, item_ids: list[int]) -> dict
     return {item_id: max(sum(parts.values()), 0) for item_id, parts in received_breakdown(db, location_id, item_ids).items()}
 
 
+def ledger_kind(split_writeoffs: bool = False):  # a first count round's accepted gap is its own line: not used stock, and not part of the opening
+    """What a ledger row means for the reports: goods sent back to a supplier are returns, and a voided invoice or return reverses its own kind,
+    rather than being read as stock used up or a count adjustment. With `split_writeoffs`, stock reported missing or written off is its own kind."""
+    return case(
+        *([(and_(StockTransaction.ref_type == "breakage", StockTransaction.txn_type == "adjustment"), "writeoff")] if split_writeoffs else []),
+        (StockTransaction.ref_type == "count_baseline", "baseline"),
+        (and_(StockTransaction.ref_type == "receipt", StockTransaction.txn_type == "issue"), "return"),
+        (and_(StockTransaction.ref_type == "receipt_void", StockTransaction.qty_delta < 0), "receipt"),
+        (StockTransaction.ref_type == "receipt_void", "return"),
+        else_=StockTransaction.txn_type)
+
+
 def reconcile(db: Session, location: Location, month: str) -> list[dict]:
     """Per item: opening + movements = closing, plus the latest posted physical count in the month.
 
@@ -158,9 +196,10 @@ def reconcile(db: Session, location: Location, month: str) -> list[dict]:
         window.append(StockTransaction.occurred_at >= _month_bounds(location.timezone, base_month)[1])
     seen_before_start = set(before)
     worth = func.sum(StockTransaction.qty_delta * func.coalesce(StockTransaction.unit_cost, 0))
+    kind = ledger_kind()
     sums = db.execute(
-        select(StockTransaction.item_id, StockTransaction.txn_type, in_month.label("in_month"), func.sum(StockTransaction.qty_delta), worth)
-        .where(*window).group_by(StockTransaction.item_id, StockTransaction.txn_type, in_month)).all()
+        select(StockTransaction.item_id, kind, in_month.label("in_month"), func.sum(StockTransaction.qty_delta), worth)
+        .where(*window).group_by(StockTransaction.item_id, kind, in_month)).all()
     during: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     during_value: dict[int, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     for item_id, txn_type, inside, total, total_value in sums:
@@ -189,14 +228,14 @@ def reconcile(db: Session, location: Location, month: str) -> list[dict]:
             "opening_stock": mine["opening"], "receipts": mine["receipt"], "returns": mine["return"],
             "issues": mine["issue"], "breakage_damage": mine["breakage"] + mine["damage"],
             "transfers_in": mine["transfer_in"], "transfers_out": mine["transfer_out"],
-            "adjustments": mine["adjustment"],
+            "adjustments": mine["adjustment"] + mine["baseline"],
         }
         closing = before[item.id] + sum(movements.values())
         worth_mine = during_value[item.id]
         values = {
             "receipts_value": worth_mine["receipt"], "returns_value": worth_mine["return"], "issues_value": worth_mine["issue"],
             "breakage_damage_value": worth_mine["breakage"] + worth_mine["damage"], "transfers_in_value": worth_mine["transfer_in"],
-            "transfers_out_value": worth_mine["transfer_out"], "adjustments_value": worth_mine["adjustment"],
+            "transfers_out_value": worth_mine["transfer_out"], "adjustments_value": worth_mine["adjustment"] + worth_mine["baseline"],
             "opening_stock_value": worth_mine["opening"]}
         closing_value = before_value[item.id] + sum(worth_mine.values())
         line = last_count.get(item.id)
@@ -206,10 +245,10 @@ def reconcile(db: Session, location: Location, month: str) -> list[dict]:
         rows.append({
             "item_id": item.id, "code": item.code, "name": item.name, "opening": before[item.id], **movements,
             "closing": closing, "counted_qty": line.counted_qty if line else None,
-            "count_variance": variance, "variance_value": round(variance * cost, 2) if variance and cost is not None else None,
-            "opening_value": round(float(before_value[item.id]), 2), "closing_value": round(float(closing_value), 2),
-            **{k: round(float(v), 2) for k, v in values.items()},
-            "value": round(float(closing_value), 2) if closing_value or closing else None,
+            "count_variance": variance, "variance_value": round(variance * cost, 3) if variance and cost is not None else None,
+            "opening_value": round(float(before_value[item.id]), 3), "closing_value": round(float(closing_value), 3),
+            **{k: round(float(v), 3) for k, v in values.items()},
+            "value": round(float(closing_value), 3) if closing_value or closing else None,
         })
     return rows
 
@@ -221,7 +260,7 @@ def variance_summary(rows: list[dict]) -> dict:
     return {"counted_items": sum(1 for r in rows if r["counted_qty"] is not None), "shortage_items": len(short),
             "surplus_items": len(over), "shortage_units": -sum(r["count_variance"] for r in short),
             "surplus_units": sum(r["count_variance"] for r in over),
-            "net_value": round(sum(r["variance_value"] or 0 for r in rows), 2)}
+            "net_value": round(sum(r["variance_value"] or 0 for r in rows), 3)}
 
 
 def balance_matches_ledger(db: Session, item_id: int, location_id: int) -> bool:

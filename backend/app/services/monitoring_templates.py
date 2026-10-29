@@ -4,6 +4,7 @@ from datetime import time
 TEMP = {"parameter": "Temperature", "unit": "°C", "value_type": "number"}
 YES_NO = {"parameter": "Check", "unit": None, "value_type": "yes_no"}
 ITEM = {"require_reference": True, "reference_label": "Item or product name"}
+LOTS = {"trace_lots": True}
 START = {"phase": "start"}
 FINISH = {"phase": "finish"}
 
@@ -20,17 +21,17 @@ TEMPLATES = [
         {"stage": "Morning temperature", **TEMP, **at(8), "min_value": -40, "max_value": -18, "source": "independent_probe"},
         {"stage": "Afternoon temperature", **TEMP, **at(16), "min_value": -40, "max_value": -18, "source": "independent_probe"}]},
     {"key": "defrosting", "name": "Defrosting log", "prefix": "DF", "type": "Defrosting", "checks": [
-        {"stage": "Time in", **TEMP, **at(9), **ITEM, **START, "min_value": 0, "max_value": 5, "source": "independent_probe"},
+        {"stage": "Time in", **TEMP, **at(9), **LOTS, **START, "min_value": 0, "max_value": 5, "source": "independent_probe"},
         {"stage": "Time out", **YES_NO, "parameter": "Fully defrosted", "timing": "checkpoint", **FINISH},
         {"stage": "Time out", **TEMP, "timing": "checkpoint", **FINISH, "min_value": 0, "max_value": 5, "source": "independent_probe"}]},
     {"key": "cooking", "name": "Cooking core temperature", "prefix": "CK", "type": "Cooking", "checks": [
         {"stage": "Lunch core temperature", **TEMP, **at(12), **ITEM, "min_value": 75, "max_value": 120, "source": "independent_probe"},
         {"stage": "Dinner core temperature", **TEMP, **at(18), **ITEM, "min_value": 75, "max_value": 120, "source": "independent_probe"}]},
     {"key": "reheating", "name": "Reheating", "prefix": "RH", "type": "Reheating", "checks": [
-        {"stage": "Core temperature after reheating", **TEMP, **at(12), **ITEM, "min_value": 75, "max_value": 120,
+        {"stage": "Core temperature after reheating", **TEMP, **at(12), **LOTS, "min_value": 75, "max_value": 120,
          "source": "independent_probe"}]},
     {"key": "cooling", "name": "Cooling", "prefix": "CL", "type": "Cooling", "checks": [
-        {"stage": "Time in", **TEMP, **at(14), **ITEM, **START, "min_value": 60, "max_value": 100, "source": "independent_probe"},
+        {"stage": "Time in", **TEMP, **at(14), **LOTS, **START, "min_value": 60, "max_value": 100, "source": "independent_probe"},
         {"stage": "Time out", **TEMP, "timing": "checkpoint", **FINISH, "min_value": -5, "max_value": 10, "source": "independent_probe"}]},
     {"key": "hot_holding", "name": "Hot holding", "prefix": "HH", "type": "Hot holding", "checks": [
         {"stage": "Holding temperature", **TEMP, "timing": "interval", "interval_minutes": 120, "time_of_day": time(11, 0),

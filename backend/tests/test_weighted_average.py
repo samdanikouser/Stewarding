@@ -104,7 +104,7 @@ def test_the_cost_report_is_in_the_records_and_needs_the_inventory_module(client
     receive(client, login, db, item, sup, 10, 2.00, "W-X1")
     doc = client.get("/api/reports/records/stock_cost?date_from=2026-03-01&date_to=2026-03-31", headers=login(MGR)).json()
     group = next(g for g in doc["groups"] if "Main Kitchen" in g["title"])
-    assert dict(group["totals"])["Purchases"] == "20.00" and ("Costing method", "Weighted average cost") in [tuple(m) for m in group["meta"]]
+    assert dict(group["totals"])["Purchases"] == "20.000" and ("Costing method", "Weighted average cost") in [tuple(m) for m in group["meta"]]
     for fmt in ("pdf", "xlsx", "csv"):
         assert client.get(f"/api/reports/records/stock_cost/export?fmt={fmt}&date_from=2026-03-01&date_to=2026-03-31", headers=login(MGR)).status_code == 200
     assert client.get(f"{URL}?location_id=1&date_from=2026-03-01&date_to=2026-03-31", headers=login("steward.mk@example.test")).status_code == 403
@@ -159,3 +159,50 @@ def test_completed_prices_are_frozen_when_the_item_price_changes_later(client, l
     assert next(i for i in client.get("/api/breakage", headers=m).json()["items"] if i["id"] == incident["id"])["est_cost"] == 3.0
     listed = next(i for i in client.get("/api/inventory/items?search=Costing", headers=m).json()["items"] if i["id"] == item["id"])
     assert listed["unit_cost"] == 9.0 and listed["value"] == 12.0      # today's value uses the average (4 held x 3.00), not the new reference price
+
+
+def test_a_purchase_counts_in_the_period_of_its_invoice_date_not_the_day_it_was_entered(client, login, db, clock):
+    item, sup = item_and_supplier(client, login, db)
+    m = login(MGR)
+    # entered on 2 March, invoiced on 27 February; a second one has no invoice date and counts on 2 March
+    assert receive(client, login, db, item, sup, 10, 2.00, "D-FEB", invoice_date="2026-02-27").status_code == 201
+    assert receive(client, login, db, item, sup, 5, 3.00, "D-MAR").status_code == 201
+
+    def purchases(date_from, date_to):
+        report = client.get(f"{URL}?location_id={loc_id(db, 'MK')}&date_from={date_from}&date_to={date_to}", headers=m).json()
+        row = next((r for r in report["rows"] if r["item_id"] == item["id"]), None)
+        return (row["purchases"], row["opening_value"], row["closing_value"]) if row else None
+
+    assert purchases("2026-02-01", "2026-02-28") == (20.0, 0.0, 20.0)
+    assert purchases("2026-03-01", "2026-03-31") == (15.0, 20.0, 35.0)
+
+
+def test_the_cost_report_keeps_a_third_decimal(client, login, db, clock):
+    item, sup = item_and_supplier(client, login, db)
+    receive(client, login, db, item, sup, 10, 2.345, "W-T1")
+    report = client.get(f"{URL}?location_id={loc_id(db, 'MK')}&date_from=2026-03-01&date_to=2026-03-31", headers=login(MGR)).json()
+    row = next(r for r in report["rows"] if r["item_id"] == item["id"])
+    assert row["purchases"] == 23.45 and row["closing_value"] == 23.45 and report["totals"]["purchases"] == 23.45
+    doc = client.get("/api/reports/records/stock_cost?date_from=2026-03-01&date_to=2026-03-31", headers=login(MGR)).json()
+    group = next(g for g in doc["groups"] if "Main Kitchen" in g["title"])
+    assert dict(group["totals"])["Purchases"] == "23.450"
+
+
+def test_a_breakage_cost_keeps_a_third_decimal(client, login, db, clock):
+    item, sup = item_and_supplier(client, login, db)
+    receive(client, login, db, item, sup, 10, 2.345, "W-B1")                 # average 2.345
+    incident = client.post("/api/breakage", headers=login("steward.mk@example.test"),
+                           json={"location_id": loc_id(db, "MK"), "item_id": item["id"], "qty": 3, "incident_type": "breakage", "reason": "dropped"}).json()
+    client.post(f"/api/breakage/{incident['id']}/review", headers=login(SUP), json={"qty": 3, "reason": "confirmed"})
+    listed = client.get("/api/breakage", headers=login(MGR)).json()
+    mine = next(i for i in listed["items"] if i["id"] == incident["id"])
+    assert mine["est_cost"] == 7.035 and listed["totals"]["cost"] == 7.035      # 3 x 2.345
+
+
+def test_the_stock_value_keeps_a_third_decimal(client, login, db, clock):
+    item, sup = item_and_supplier(client, login, db)
+    receive(client, login, db, item, sup, 10, 2.345, "W-V1")
+    page = client.get(f"/api/inventory/items?location_id={loc_id(db, 'MK')}&size=200", headers=login(MGR)).json()
+    row = next(i for i in page["items"] if i["id"] == item["id"])
+    assert row["avg_cost"] == 2.345 and row["value"] == 23.45
+    assert page["total_value"] == round(page["total_value"], 3) and page["total_value"] >= 23.45

@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -22,7 +22,7 @@ class BreakageIncident(Base):
     shift_id: Mapped[int | None] = mapped_column(ForeignKey("shift.id"))
     reported_by: Mapped[int] = mapped_column(ForeignKey("user.id"))
     photo_path: Mapped[str | None] = mapped_column(String(300))
-    est_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    est_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
     status: Mapped[str] = mapped_column(String(20), default="reported", index=True)
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -52,6 +52,18 @@ class Notification(Base):
     requires_ack: Mapped[bool] = mapped_column(Boolean, default=False)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PushSubscription(Base):
+    """One browser or phone that asked for push alerts; the endpoint is where the browser's push service takes a message."""
+
+    __tablename__ = "push_subscription"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
+    endpoint: Mapped[str] = mapped_column(String(600), unique=True)
+    p256dh: Mapped[str] = mapped_column(String(200))
+    auth: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = ts()
 
 
 class ApprovalRecord(Base):
@@ -104,3 +116,16 @@ class Organization(Base):
     report_footer: Mapped[str | None] = mapped_column(String(300))
     logo: Mapped[str | None] = mapped_column(String(60))
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Kuwait")  # shown on reports and used for new locations
+    currency: Mapped[str | None] = mapped_column(String(8))  # shown with amounts; none until set
+
+
+class ScanEvent(Base):
+    """A person scanning the QR code of a monitoring point or a location; recording there can require a recent scan."""
+
+    __tablename__ = "scan_event"
+    __table_args__ = (Index("ix_scan_event_lookup", "user_id", "kind", "target_id", "created_at"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"))
+    kind: Mapped[str] = mapped_column(String(12))  # equipment | location
+    target_id: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = ts()

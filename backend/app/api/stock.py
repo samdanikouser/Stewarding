@@ -1,26 +1,28 @@
 import re
+from typing import Literal
 from collections import defaultdict
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import timeutil
 from ..audit import audit
 from ..db import get_db
 from ..deps import check_location, permissions_of, require, scoped_locations
-from ..models import (ApprovalRecord, InventoryBalance, InventoryCount, InventoryCountLine, InventoryItem,
-                      InventoryTransfer, InventoryTransferLine, Location, StockTransaction, User)
+from ..models import (ApprovalRecord, CountDraft, InventoryBalance, InventoryCount, InventoryCountLine, InventoryItem,
+                      InventoryTransfer, InventoryTransferLine, Location, StockTransaction, TrackedAsset, User)
 from ..pagination import row
 from ..permissions import MANAGER, SUPERVISOR
 from ..services import metrics
 from ..services.costing import MEASURES, category_rows, cost_report
 from ..services.inventory import StockError, post_txn, received_breakdown, received_to_date, reconcile, variance_summary
-from ..services.notify import notify, recipients
+from ..services.notify import holders_of, notify, recipients
 from .inventory import get_item_or_404
+from .receipts import check_month_open
 
 router = APIRouter(prefix="/api/stock", tags=["stock"])
 
@@ -32,6 +34,7 @@ TRANSFER_FIELDS = ("id", "from_location_id", "to_location_id", "status", "reques
 class LineIn(BaseModel):
     item_id: int
     qty: int = Field(gt=0)
+    asset_ids: list[int] = Field(default_factory=list, max_length=1000)  # the tags that move, for a tracked item
 
 
 class TransferIn(BaseModel):
@@ -39,6 +42,7 @@ class TransferIn(BaseModel):
     to_location_id: int
     lines: list[LineIn] = Field(min_length=1)
     note: str | None = Field(default=None, max_length=500)
+    moved_on: date | None = None  # a catch-up: the stock was already moved by hand on this day
 
 
 class DecisionIn(BaseModel):
@@ -66,18 +70,23 @@ def _transfer_dict(db: Session, transfer: InventoryTransfer) -> dict:
     out = []
     for ln in lines:
         cost = sent.get(ln.item_id) if transfer.status == "completed" else averages.get(ln.item_id)
-        out.append({**row(ln, "item_id", "qty"), "unit_cost": float(cost) if cost is not None else None,
-                    "value": round(float(cost) * ln.qty, 2) if cost is not None else None})
-    return {**row(transfer, *TRANSFER_FIELDS), "lines": out, "total_value": round(sum(l["value"] or 0 for l in out), 2)}
+        tags = list(db.scalars(select(TrackedAsset.asset_tag).where(TrackedAsset.id.in_(ln.asset_ids or [])).order_by(TrackedAsset.asset_tag)))
+        out.append({**row(ln, "item_id", "qty"), "asset_tags": tags, "unit_cost": float(cost) if cost is not None else None,
+                    "value": round(float(cost) * ln.qty, 3) if cost is not None else None})
+    return {**row(transfer, *TRANSFER_FIELDS), "lines": out, "total_value": round(sum(l["value"] or 0 for l in out), 3)}
 
 
-def _execute_transfer(db: Session, user: User, transfer: InventoryTransfer) -> None:
+def _execute_transfer(db: Session, user: User, transfer: InventoryTransfer, occurred_at: datetime | None = None) -> None:
     for line in db.scalars(select(InventoryTransferLine).where(InventoryTransferLine.transfer_id == transfer.id)):
         item = db.get(InventoryItem, line.item_id)
         sent = post_txn(db, user, item, transfer.from_location_id, "transfer_out", line.qty, transfer.note,
-                        "transfer", transfer.id)
+                        "transfer", transfer.id, occurred_at=occurred_at)
         post_txn(db, user, item, transfer.to_location_id, "transfer_in", line.qty, transfer.note,
-                 "transfer", transfer.id, unit_cost=sent.unit_cost)
+                 "transfer", transfer.id, unit_cost=sent.unit_cost, occurred_at=occurred_at)
+        for asset in db.scalars(select(TrackedAsset).where(TrackedAsset.id.in_(line.asset_ids or []))):
+            if asset.location_id != transfer.from_location_id:
+                raise StockError(f"Asset {asset.asset_tag} is no longer at the sending location")
+            asset.location_id = transfer.to_location_id
     transfer.status = "completed"
     transfer.decided_by, transfer.decided_at = user.id, timeutil.utc_now()
 
@@ -100,6 +109,47 @@ def location_stock(location_id: int, user: User = Depends(require("stock.transfe
         cost = balance.avg_cost if balance is not None and balance.avg_cost is not None else item.unit_cost
         out.append({"item_id": item.id, "qty": balance.qty if balance else 0, "avg_cost": float(cost) if cost is not None else None})
     return out
+
+
+def _check_assets(db: Session, body: TransferIn, wanted: dict[int, int]) -> None:
+    """A tracked item moves with the tags named, as many as the quantity; any other item moves with none."""
+    tags: dict[int, list[int]] = defaultdict(list)
+    for ln in body.lines:
+        tags[ln.item_id] += ln.asset_ids
+    for item_id, qty in wanted.items():
+        item, named = db.get(InventoryItem, item_id), tags[item_id]
+        if not item.is_tracked_asset:
+            if named:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{item.name} is not tracked by asset tag")
+            continue
+        if len(named) != qty or len(set(named)) != qty:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{item.name}: choose the {qty} asset tags that are moving")
+        found = db.scalar(select(func.count(TrackedAsset.id)).where(
+            TrackedAsset.id.in_(named), TrackedAsset.item_id == item_id, TrackedAsset.location_id == body.from_location_id))
+        if found != qty:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{item.name}: every tag must be one of its assets at the sending location")
+
+
+CATCH_UP_DAYS = 90
+
+
+def _catch_up_time(db: Session, user: User, body: TransferIn) -> datetime:
+    """When a transfer that already happened is placed in the ledger: midday of that day at the sender (or now, for today)."""
+    if "stock.approve" not in permissions_of(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only someone who can approve transfers can record one that already happened")
+    source = db.get(Location, body.from_location_id)
+    now = timeutil.utc_now()
+    today = timeutil.local_date(now, source.timezone)
+    if body.moved_on > today or body.moved_on < today - timedelta(days=CATCH_UP_DAYS):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The move must be dated today or within the last {CATCH_UP_DAYS} days")
+    check_month_open(db, body.moved_on)
+    moved = min(timeutil.local_to_utc(body.moved_on, time(12, 0), source.timezone), now)
+    counted = db.scalar(select(func.max(InventoryCount.counted_at)).where(
+        InventoryCount.status == "posted", InventoryCount.location_id.in_([body.from_location_id, body.to_location_id])))
+    if counted and moved < counted:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"A count was posted on {counted.date().isoformat()}, after that day. "
+                            "Date the move on or after the count, or leave the stock as the count left it")
+    return moved
 
 
 @router.post("/transfers", status_code=201)
@@ -126,22 +176,26 @@ def request_transfer(body: TransferIn, user: User = Depends(require("stock.trans
             audit(db, user, "stock.transfer_blocked", "inventory_item", item.id, None, {"from": source.id, "asked": wanted[item.id], "held": on_hand})
             db.commit()
             raise HTTPException(status.HTTP_409_CONFLICT, message)
+    _check_assets(db, body, wanted)
+    moved_at, note = None, body.note
+    if body.moved_on:
+        moved_at, note = _catch_up_time(db, user, body), f"Catch-up, moved on {body.moved_on.isoformat()}" + (f". {body.note}" if body.note else "")
     transfer = InventoryTransfer(from_location_id=body.from_location_id, to_location_id=body.to_location_id,
-                                 requested_by=user.id, requested_at=timeutil.utc_now(), note=body.note)
+                                 requested_by=user.id, requested_at=moved_at or timeutil.utc_now(), note=note)
     db.add(transfer)
     db.flush()
-    db.add_all(InventoryTransferLine(transfer_id=transfer.id, item_id=ln.item_id, qty=ln.qty) for ln in body.lines)
+    db.add_all(InventoryTransferLine(transfer_id=transfer.id, item_id=ln.item_id, qty=ln.qty, asset_ids=ln.asset_ids or None) for ln in body.lines)
     db.flush()
     if "stock.approve" in permissions_of(user):
         try:
-            _execute_transfer(db, user, transfer)
+            _execute_transfer(db, user, transfer, moved_at)
         except StockError as exc:
             db.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
         db.add(ApprovalRecord(subject_type="transfer", subject_id=transfer.id, decision="approved", decided_by=user.id,
                               reason="Requested by approver"))
     else:
-        notify(db, recipients(db, None, MANAGER), "transfer_pending", "Stock transfer awaiting approval",
+        notify(db, holders_of(db, "stock.approve", body.from_location_id), "transfer_pending", "Stock transfer awaiting approval",
                key=f"transfer:{transfer.id}", priority="high", location_id=body.from_location_id,
                link="/stock-movements")
     audit(db, user, "stock.transfer_request", "inventory_transfer", transfer.id, None, body.model_dump(mode="json"))
@@ -223,6 +277,40 @@ def count_limits(location_id: int, user: User = Depends(require("inventory.count
              **(parts[i] if i in parts else {"invoices": 0, "opening": 0, "transfers_in": 0})} for i in ids]
 
 
+class DraftEntry(BaseModel):
+    qty: str = Field(default="", max_length=12)
+    reason: str = Field(default="", max_length=500)
+
+
+class DraftIn(BaseModel):
+    location_id: int
+    entries: dict[int, DraftEntry] = Field(default_factory=dict, max_length=5000)
+
+
+@router.get("/count-draft")
+def read_count_draft(location_id: int, user: User = Depends(require("inventory.count")), db: Session = Depends(get_db)):
+    """The caller's unfinished count at a location, as saved while they typed."""
+    check_location(user, db, location_id)
+    draft = db.scalar(select(CountDraft).where(CountDraft.user_id == user.id, CountDraft.location_id == location_id))
+    return {"entries": draft.entries if draft else {}, "updated_at": draft.updated_at.isoformat() + "Z" if draft else None}
+
+
+@router.put("/count-draft")
+def save_count_draft(body: DraftIn, user: User = Depends(require("inventory.count")), db: Session = Depends(get_db)):
+    check_location(user, db, body.location_id)
+    entries = {str(i): e.model_dump() for i, e in body.entries.items() if e.qty.strip() or e.reason.strip()}
+    draft = db.scalar(select(CountDraft).where(CountDraft.user_id == user.id, CountDraft.location_id == body.location_id))
+    if not entries:
+        if draft:
+            db.delete(draft)
+    elif draft:
+        draft.entries, draft.updated_at = entries, timeutil.utc_now()
+    else:
+        db.add(CountDraft(user_id=user.id, location_id=body.location_id, entries=entries, updated_at=timeutil.utc_now()))
+    db.commit()
+    return {"saved": len(entries)}
+
+
 @router.post("/counts", status_code=201)
 def create_count(body: CountIn, user: User = Depends(require("inventory.count")), db: Session = Depends(get_db)):
     check_location(user, db, body.location_id)
@@ -261,6 +349,9 @@ def create_count(body: CountIn, user: User = Depends(require("inventory.count"))
                f"Count surplus at {location.name}: {item.name} counted {counted}, system {book}",
                key=f"surplus:{count.id}:{item.id}", priority="high", location_id=location.id, link="/stock-movements", requires_ack=True,
                body=f"Counted by {user.email}. A manager decides whether to post it.")
+    draft = db.scalar(select(CountDraft).where(CountDraft.user_id == user.id, CountDraft.location_id == location.id))
+    if draft:
+        db.delete(draft)  # the count is saved properly, so the working copy is done with
     db.commit()
     return _count_dict(db, count)
 
@@ -296,6 +387,15 @@ def post_count(count_id: int, user: User = Depends(require("inventory.count")), 
     if variances and "stock.approve" not in permissions_of(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a manager can post a count that has variances")
     for ln in variances:
+        newer = db.scalar(
+            select(InventoryCount.id).join(InventoryCountLine, InventoryCountLine.count_id == InventoryCount.id)
+            .join(StockTransaction, StockTransaction.id == InventoryCountLine.adjustment_txn_id)
+            .where(InventoryCount.location_id == count.location_id, InventoryCount.id != count.id,
+                   InventoryCountLine.item_id == ln.item_id, StockTransaction.occurred_at >= count.counted_at).limit(1))
+        if newer:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"{db.get(InventoryItem, ln.item_id).name} was already corrected by count #{newer} "
+                                "after this count was taken. Recount the item.")
+    for ln in variances:
         item = db.get(InventoryItem, ln.item_id)
         txn = post_txn(db, user, item, count.location_id, "adjustment", ln.counted_qty - ln.system_qty,
                        f"Physical count #{count.id} variance", "count", count.id, allow_negative=True)
@@ -309,8 +409,23 @@ def post_count(count_id: int, user: User = Depends(require("inventory.count")), 
 
 @router.get("/insights")
 def insights(location_id: int | None = None, date_from: date | None = None, date_to: date | None = None,
+             date_by: Literal["invoice", "received"] = "invoice",
              user: User = Depends(require("inventory.module")), db: Session = Depends(get_db)):
-    """Stock in and out, breakage and transfers for charts; the last 30 days unless dates are given."""
+    """Stock in and out, breakage and transfers for charts; the last 30 days unless dates are given.
+
+    Deliveries sit on the invoice date (or the received date when `date_by` says so), not on the day they were entered."""
+    return _insights_with(metrics.stock_insights, location_id, date_from, date_to, date_by, user, db)
+
+
+@router.get("/analysis")
+def analysis(location_id: int | None = None, date_from: date | None = None, date_to: date | None = None,
+             date_by: Literal["invoice", "received"] = "invoice",
+             user: User = Depends(require("inventory.module")), db: Session = Depends(get_db)):
+    """Purchases, suppliers, most used items and what stock is worth, for the same places and dates as the insights."""
+    return _insights_with(metrics.stock_analysis, location_id, date_from, date_to, date_by, user, db)
+
+
+def _insights_with(build, location_id, date_from, date_to, date_by, user, db):
     now = timeutil.utc_now()
     if location_id is not None:
         check_location(user, db, location_id)
@@ -324,7 +439,7 @@ def insights(location_id: int | None = None, date_from: date | None = None, date
         wins = metrics.windows(db, now, scope, location_id, day_from, day_to)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
-    return metrics.stock_insights(db, wins, day_from, day_to)
+    return build(db, wins, day_from, day_to, date_by)
 
 
 def _locations_in_scope(db: Session, user: User) -> list[Location]:
@@ -356,7 +471,7 @@ def stock_cost(date_from: date, date_to: date, location_id: int | None = None,
             together[line["category"]]["items"] += line["items"]
             for key in MEASURES:
                 together[line["category"]][key] += Decimal(str(line[key]))
-    totals = {key: round(sum(p["totals"].get(key, 0) for p in per_place), 2) for key in MEASURES}
+    totals = {key: round(sum(p["totals"].get(key, 0) for p in per_place), 3) for key in MEASURES}
     return {**period, "locations": per_place, "totals": totals, "by_category": category_rows(together, Decimal(str(totals["cost_consumed"])))}
 
 
@@ -375,7 +490,7 @@ def reconciliation(month: str, location_id: int | None = None,
     for location in _locations_in_scope(db, user):
         rows = reconcile(db, location, month)
         sections.append({"location_id": location.id, "location": location.name, "rows": rows, "variance": variance_summary(rows),
-                         "total_closing": sum(r["closing"] for r in rows), "closing_value": round(sum(r["closing_value"] for r in rows), 2)})
+                         "total_closing": sum(r["closing"] for r in rows), "closing_value": round(sum(r["closing_value"] for r in rows), 3)})
     everything = [r for s in sections for r in s["rows"]]
     return {"month": month, "locations": sections, "variance": variance_summary(everything), "total_closing": sum(s["total_closing"] for s in sections),
-            "closing_value": round(sum(s["closing_value"] for s in sections), 2)}
+            "closing_value": round(sum(s["closing_value"] for s in sections), 3)}

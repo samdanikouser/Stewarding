@@ -1,0 +1,7 @@
+# Sourced (.envsh, executable) by the nginx entrypoint before the template is rendered. nginx's resolver ignores the
+# search domain, so a short private hostname gets the platform's search domain appended.
+host="${BACKEND_ADDR%%:*}"
+domain=$(awk '$1 == "search" { print $2; exit }' /etc/resolv.conf)
+if [ "${host#*.}" = "$host" ] && [ -n "$domain" ]; then
+    export BACKEND_ADDR="$host.$domain:${BACKEND_ADDR#*:}"
+fi

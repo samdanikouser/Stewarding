@@ -20,13 +20,14 @@ function CategoryList() {
   }
   return (
     <Card>
-      <CardHeader><CardTitle>Categories</CardTitle></CardHeader>
-      <CardContent>
+      <CardHeader className="p-6 pb-3"><CardTitle className="text-lg">Categories</CardTitle></CardHeader>
+      <CardContent className="p-6 pt-3">
         <ManagedList
           entries={data ?? []} placeholder="New category"
           onAdd={(name) => act(() => api('/inventory/categories', { body: { name } }), 'Category added')}
           onRename={(id, name) => act(() => api(`/inventory/categories/${id}`, { method: 'PUT', body: { name } }), 'Category renamed')}
-          onToggle={(id, active) => act(() => api(`/inventory/categories/${id}`, { method: 'PUT', body: { active } }), active ? 'Category restored' : 'Category retired')}
+          onToggle={(id, active) => act(() => api(`/inventory/categories/${id}`, { method: 'PUT', body: { active } }), active ? 'Category made active' : 'Category made inactive')}
+          onDelete={(id) => act(() => api(`/inventory/categories/${id}`, { method: 'DELETE' }), 'Category deleted')} noun="category"
         />
       </CardContent>
     </Card>
@@ -43,13 +44,14 @@ function UnitList() {
   }
   return (
     <Card>
-      <CardHeader><CardTitle>Units of measure</CardTitle></CardHeader>
-      <CardContent>
+      <CardHeader className="p-6 pb-3"><CardTitle className="text-lg">Units of measure</CardTitle></CardHeader>
+      <CardContent className="p-6 pt-3">
         <ManagedList
           entries={data ?? []} placeholder="New unit, e.g. Box"
           onAdd={(name) => act(() => api('/inventory/units', { body: { name } }), 'Unit added')}
           onRename={(id, name) => act(() => api(`/inventory/units/${id}`, { method: 'PUT', body: { name } }), 'Unit renamed')}
-          onToggle={(id, active) => act(() => api(`/inventory/units/${id}`, { method: 'PUT', body: { active } }), active ? 'Unit restored' : 'Unit retired')}
+          onToggle={(id, active) => act(() => api(`/inventory/units/${id}`, { method: 'PUT', body: { active } }), active ? 'Unit made active' : 'Unit made inactive')}
+          onDelete={(id) => act(() => api(`/inventory/units/${id}`, { method: 'DELETE' }), 'Unit deleted')} noun="unit"
         />
       </CardContent>
     </Card>
@@ -58,9 +60,8 @@ function UnitList() {
 
 export function SettingsInventoryLists() {
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-ink-muted">Categories separate the items in the single inventory. Categories and units appear in the item master. Retired values stay on existing items but cannot be chosen for new ones.</p>
-      <div className="grid gap-4 lg:grid-cols-2">
+    <div className="space-y-6">
+      <div className="grid gap-6 lg:grid-cols-2">
         <CategoryList />
         <UnitList />
       </div>

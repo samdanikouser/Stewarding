@@ -67,7 +67,7 @@ export function SignaturePad({ onChange }: SignaturePadProps) {
         height={200}
         role="img"
         aria-label="Signature box"
-        className="h-32 w-full max-w-md touch-none rounded-lg border border-dashed border-border bg-surface"
+        className="h-32 w-full max-w-md touch-none rounded-lg border border-dashed border-border-strong bg-white"
         onPointerDown={start}
         onPointerMove={move}
         onPointerUp={end}

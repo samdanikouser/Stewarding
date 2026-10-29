@@ -61,12 +61,12 @@ export function CorrectiveActionsPanel({ locationId, equipment, refreshKey, onRe
 
   return (
     <Card className={open.length ? 'border-danger/50' : undefined}>
-      <CardHeader><CardTitle>Open corrective actions{open.length ? ` (${open.length})` : ''}</CardTitle></CardHeader>
-      <CardContent>
-        {open.length === 0 ? <EmptyState title="Nothing outstanding" hint="Failed checks that need action will appear here." /> : (
+      <CardHeader className="p-6 pb-3"><CardTitle className="text-lg">Open corrective actions{open.length ? ` (${open.length})` : ''}</CardTitle></CardHeader>
+      <CardContent className="p-6 pt-2">
+        {open.length === 0 ? <EmptyState title="Nothing outstanding" /> : (
           <ul className="divide-y divide-border">
             {open.map((a) => (
-              <li key={a.id} className="space-y-2 py-3 text-sm">
+              <li key={a.id} className="space-y-2 py-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-medium">{names.get(a.equipment_id)} - {label(a.stage)}: {a.display}</span>
                   <StatusBadge status={a.status} />
@@ -93,22 +93,26 @@ export function CorrectiveActionsPanel({ locationId, equipment, refreshKey, onRe
         )}
       </CardContent>
 
-      <Modal open={dialog !== null} title={dialog?.kind === 'action' ? 'Record corrective action' : 'Reject corrective action'} onClose={() => setDialog(null)}>
-        <div className="space-y-3">
-          <Field label={dialog?.kind === 'action' ? 'What was done?' : 'Why is it rejected?'}>
-            <Input list={dialog?.kind === 'action' ? 'panel-standard-actions' : undefined} value={text} onChange={(e) => setText(e.target.value)} />
-            <datalist id="panel-standard-actions">{standardActions.map((a) => <option key={a} value={a} />)}</datalist>
-          </Field>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setDialog(null)}>Cancel</Button>
-            <Button disabled={text.trim().length < 5}
-              onClick={() => dialog && (dialog.kind === 'action'
-                ? send(`${dialog.row.id}/action`, { action: text }, 'Corrective action recorded - retest due')
-                : send(`${dialog.row.id}/decision`, { decision: 'reject', note: text }, 'Action rejected'))}>
-              Confirm
-            </Button>
-          </div>
-        </div>
+      <Modal
+        open={dialog !== null}
+        size="md"
+        title={dialog?.kind === 'action' ? 'Record corrective action' : 'Reject corrective action'}
+        description={dialog ? `${names.get(dialog.row.equipment_id)}, ${label(dialog.row.stage)}: ${dialog.row.display}` : undefined}
+        onClose={() => setDialog(null)}
+        footer={<>
+          <Button variant="outline" onClick={() => setDialog(null)}>Cancel</Button>
+          <Button disabled={text.trim().length < 5}
+            onClick={() => dialog && (dialog.kind === 'action'
+              ? send(`${dialog.row.id}/action`, { action: text }, 'Corrective action recorded - retest due')
+              : send(`${dialog.row.id}/decision`, { decision: 'reject', note: text }, 'Action rejected'))}>
+            Confirm
+          </Button>
+        </>}
+      >
+        <Field label={dialog?.kind === 'action' ? 'What was done?' : 'Why is it rejected?'}>
+          <Input list={dialog?.kind === 'action' ? 'panel-standard-actions' : undefined} value={text} onChange={(e) => setText(e.target.value)} />
+          <datalist id="panel-standard-actions">{standardActions.map((a) => <option key={a} value={a} />)}</datalist>
+        </Field>
       </Modal>
     </Card>
   )

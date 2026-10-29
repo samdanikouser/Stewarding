@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from app.models import (BreakageIncident, InventoryItem, InventoryTransfer, Receipt, StockTransaction)
 
-from .helpers import MGR, STEWARD, SUP, SUP_RB, balance, item_id, ledger_sum, loc_id
+from .helpers import MGR, STEWARD, SUP, SUP_RB, balance, item_id, ledger_sum, loc_id, retire_item
 from .test_receiving import receive
 
 
@@ -68,7 +68,7 @@ def test_stock_cannot_go_negative(client, login, db):  # noqa: C901
 
 def test_retired_items_and_foreign_locations_are_refused(client, login, db):
     m = login(MGR)
-    client.put(f"/api/inventory/items/{item_id(db, 'PL-002')}", json={"active": False}, headers=m)
+    retire_item(client, m, db, "PL-002")
     assert txn(client, m, db, code="PL-002", txn_type="receipt", qty=5).status_code in (400, 409)
     assert txn(client, login(SUP_RB), db, loc="MK").status_code == 403
     assert client.post("/api/inventory/transactions", json={"item_id": item_id(db, "PL-001"), "location_id": 9999, "txn_type": "receipt", "qty": 1}, headers=m).status_code in (400, 403, 404)

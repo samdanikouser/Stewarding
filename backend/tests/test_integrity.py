@@ -143,7 +143,8 @@ def test_night_shift_crossing_midnight_is_paid_and_dated_correctly(client, login
 def test_monitoring_readings_land_on_the_correct_local_day_around_a_clock_change(client, login, db, clock):
     h = login(STEWARD_RB)
     eq = next(e for e in client.get("/api/monitoring/equipment", headers=h).json() if e["code"] == "GW-RB-1")
-    wash = next(s for s in eq["schedules"] if s["stage"] == "wash")
+    wash = client.post(f"/api/equipment/{eq['id']}/schedules", headers=login(MGR), json={
+        "stage": "spot check", "timing": "manual", "min_value": 0, "max_value": 100}).json()
     for moment in ((2026, 3, 29, 0, 30), (2026, 3, 29, 23, 30)):  # 00:30 GMT on the 29th, 00:30 BST on the 30th
         clock.set(*moment)
         client.post("/api/monitoring/readings", headers=h, json={"equipment_id": eq["id"], "schedule_id": wash["id"], "value": 60})

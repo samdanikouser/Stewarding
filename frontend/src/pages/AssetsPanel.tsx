@@ -26,7 +26,7 @@ export function AssetsPanel({ locationId, items }: { locationId: number | null; 
     if (await run(() => api(`/inventory/assets/${asset.id}`, { method: 'PUT', body: { condition } }), 'Condition updated')) reload()
   }
 
-  if (data?.length === 0) return <EmptyState title="No tracked assets here" hint="Items configured as tracked assets list their tags here." />
+  if (data?.length === 0) return <EmptyState title="No tracked assets here" />
   return (
     <Table>
       <thead><tr><Th>Tag</Th><Th>Item</Th><Th>Location</Th><Th>Condition</Th></tr></thead>

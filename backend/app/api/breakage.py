@@ -14,8 +14,8 @@ from ..deps import check_location, permissions_of, require, scoped_locations
 from ..models import ApprovalRecord, BreakageIncident, Employee, InventoryBalance, InventoryItem, Shift, User
 from ..pagination import paginate, row
 from ..permissions import MANAGER, SUPERVISOR
-from ..services.inventory import post_txn
-from ..services.notify import notify, recipients
+from ..services.inventory import StockError, post_txn
+from ..services.notify import holders_of, notify, recipients
 from ..services.settings import get_setting
 from .inventory import _can_see_cost, get_item_or_404
 from .uploads import is_valid_evidence
@@ -88,13 +88,24 @@ def _worth(db: Session, item: InventoryItem, location_id: int, qty: int) -> Deci
     """What the units are worth: the weighted average cost at the location, or the item's own cost until there is one."""
     average = db.scalar(select(InventoryBalance.avg_cost).where(InventoryBalance.item_id == item.id, InventoryBalance.location_id == location_id))
     unit = average if average is not None else item.unit_cost
-    return (unit * qty).quantize(Decimal("0.01")) if unit is not None else None
+    return (unit * qty).quantize(Decimal("0.001")) if unit is not None else None
 
 
 def _needs_approval(db: Session, qty: int, cost) -> bool:
     over_qty = qty >= get_setting(db, "breakage.approval_qty")
     over_cost = cost is not None and cost >= get_setting(db, "breakage.approval_cost")
     return over_qty or over_cost
+
+
+def _day_total(db: Session, incident: BreakageIncident) -> tuple[int, Decimal]:
+    """Quantity and cost of the other breakages of this item here within a day of this one, rejected ones left out."""
+    window = timedelta(hours=24)
+    qty, cost = db.execute(
+        select(func.coalesce(func.sum(BreakageIncident.qty), 0), func.coalesce(func.sum(BreakageIncident.est_cost), 0))
+        .where(BreakageIncident.item_id == incident.item_id, BreakageIncident.location_id == incident.location_id,
+               BreakageIncident.id != incident.id, BreakageIncident.status != "rejected",
+               BreakageIncident.occurred_at >= incident.occurred_at - window, BreakageIncident.occurred_at <= incident.occurred_at + window)).one()
+    return int(qty), Decimal(str(cost))
 
 
 def _deduct(db: Session, user: User, incident: BreakageIncident) -> None:
@@ -105,11 +116,15 @@ def _deduct(db: Session, user: User, incident: BreakageIncident) -> None:
     reason = f"{incident.code}: {incident.incident_type}" + (f" - {incident.reason}" if incident.reason else "")
     txn_type = TXN_TYPE[incident.incident_type]
     qty = -incident.qty if txn_type == "adjustment" else incident.qty
-    txn = post_txn(db, user, item, incident.location_id, txn_type, qty, reason, "breakage", incident.id,
-                   allow_negative=True)
+    try:
+        txn = post_txn(db, user, item, incident.location_id, txn_type, qty, reason, "breakage", incident.id,
+                       allow_negative="breakage.approve" in permissions_of(user))
+    except StockError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, f"{exc}. Only a manager can write off more than the books show; ask one to review it.") from None
     incident.transaction_id = txn.id
     if txn.unit_cost is not None:
-        incident.est_cost = (txn.unit_cost * incident.qty).quantize(Decimal("0.01"))  # the value is what the ledger took out
+        incident.est_cost = (txn.unit_cost * incident.qty).quantize(Decimal("0.001"))  # the value is what the ledger took out
 
 
 def _create(db: Session, user: User, now: datetime, item: InventoryItem, qty: int, cost: Decimal | None, **common) -> BreakageIncident:
@@ -201,7 +216,7 @@ def list_incidents(location_id: int | None = None, incident_status: str | None =
     cost, units = db.execute(select(func.coalesce(func.sum(BreakageIncident.est_cost), 0), func.coalesce(func.sum(BreakageIncident.qty), 0))
                              .where(*conds, BreakageIncident.status != "rejected")).one()
     return {"total": total, "items": [_serialize(i, names) for i in incidents],
-            "totals": {"cost": round(float(cost), 2), "units": int(units)}}
+            "totals": {"cost": round(float(cost), 3), "units": int(units)}}
 
 
 @router.post("/{incident_id}/review")
@@ -214,6 +229,7 @@ def review(incident_id: int, body: ReviewIn, user: User = Depends(require("break
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot review an incident you reported")
     now = timeutil.utc_now()
     item = db.get(InventoryItem, incident.item_id)
+    reported_qty, reported_cost = incident.qty, incident.est_cost or Decimal(0)
     incident.qty = body.qty
     incident.reason = body.reason or incident.reason
     incident.preventive_action = body.preventive_action
@@ -221,9 +237,10 @@ def review(incident_id: int, body: ReviewIn, user: User = Depends(require("break
     if worth is not None:
         incident.est_cost = worth
     incident.reviewed_by, incident.reviewed_at = user.id, now
-    if _needs_approval(db, incident.qty, incident.est_cost):
+    others_qty, others_cost = _day_total(db, incident)
+    if _needs_approval(db, others_qty + max(reported_qty, incident.qty), others_cost + max(reported_cost, incident.est_cost or Decimal(0))):
         incident.status = "pending_approval"
-        notify(db, recipients(db, None, MANAGER), "breakage_approval", f"Approval needed: {incident.code}",
+        notify(db, holders_of(db, "breakage.approve", incident.location_id), "breakage_approval", f"Approval needed: {incident.code}",
                key=f"brk_approve:{incident.id}", priority="high", location_id=incident.location_id,
                link="/breakage", requires_ack=True)
     else:

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import audit
+from ..services.deletion import delete_if_unused
 from ..db import get_db
 from ..deps import current_user, require
 from ..models import LookupValue, User
@@ -84,3 +85,15 @@ def update_lookup(lookup_id: int, body: LookupUpdate, user: User = Depends(requi
     audit(db, user, "lookup.update", "lookup_value", item.id, before, data)
     db.commit()
     return row(item, "id", "kind", "value", "active")
+
+
+@router.delete("/{lookup_id}")
+def delete_lookup(lookup_id: int, user: User = Depends(require("settings.manage")), db: Session = Depends(get_db)):
+    item = db.get(LookupValue, lookup_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Value not found")
+    before = {"kind": item.kind, "value": item.value}
+    delete_if_unused(db, item, item.value)
+    audit(db, user, "lookup.delete", "lookup_value", lookup_id, before, None)
+    db.commit()
+    return {"deleted": lookup_id}

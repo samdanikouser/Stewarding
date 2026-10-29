@@ -1,6 +1,8 @@
 from sqlalchemy import select
 
-from app.models import CorrectiveAction, Notification, User
+from datetime import datetime, time
+
+from app.models import AttendanceRecord, CorrectiveAction, Employee, Equipment, Notification, Shift, User
 from app.scheduler import run_cycle
 from app.services.alerts import run_alerts
 
@@ -20,6 +22,10 @@ def notes(db, kind):
 
 def emails(db, rows):
     return {db.get(User, n.user_id).email for n in rows}
+
+
+def no_grace(client, login):
+    client.put("/api/settings", json={"values": {"checklist.grace_minutes": 0}}, headers=login(MGR))   # these tests are about the deadline itself
 
 
 def generate(client, login, db, code="MK"):
@@ -62,6 +68,7 @@ def test_forgotten_checkout_alerts_employee_and_supervisors(client, login, db, c
 
 
 def test_checklist_reminder_overdue_and_escalation_timeline(client, login, db, clock):
+    no_grace(client, login)
     generate(client, login, db)
     clock.set(2026, 3, 2, 8, 0)  # 12:00 Dubai, deadline 13:30
     run(db, clock)
@@ -98,6 +105,7 @@ def test_reminder_lead_time_is_configurable(client, login, db, clock):
 
 
 def test_assigned_employee_gets_a_personal_overdue_alert(client, login, db, clock):
+    no_grace(client, login)
     generate(client, login, db)
     emps = {e["employee_code"]: e["id"] for e in client.get("/api/employees?size=50", headers=login(MGR)).json()["items"]}
     tasks = client.get("/api/checklists/instances?size=200", headers=login(SUP)).json()["items"]
@@ -191,7 +199,8 @@ def test_daily_summary_is_sent_after_eight_local_once_per_day(client, login, db,
     run(db, clock)
     mk = [n for n in notes(db, "daily_summary") if n.location_id == loc_id(db, "MK")]
     assert mk and emails(db, mk) == {"manager@example.test", "sup.mk@example.test"}
-    assert "critical" in mk[0].title
+    assert "critical" in mk[0].title and "pending" in mk[0].title and "0 " not in mk[0].title      # only the kinds that exist are named
+    assert "Check overdue" in mk[0].body                                                         # and the body says what each item is
     run(db, clock)
     assert len([n for n in notes(db, "daily_summary") if n.location_id == loc_id(db, "MK")]) == len(mk)
 
@@ -207,8 +216,128 @@ def test_scheduler_cycle_is_idempotent_and_includes_alerts(client, login, db, cl
 
 
 def test_other_locations_are_not_alerted_for_mk_tasks(client, login, db, clock):
+    no_grace(client, login)
     generate(client, login, db)
     clock.set(2026, 3, 2, 9, 40)
     run(db, clock)
     recipients_ = emails(db, [n for n in notes(db, "task_overdue") if n.location_id == loc_id(db, "MK")])
     assert recipients_ and not {"sup.rb@example.test", "steward.rb@example.test"} & recipients_
+
+
+def test_a_night_shift_is_not_reported_as_unchecked_out_before_it_ends(client, login, db, clock):
+    client.put("/api/settings", json={"values": {"attendance.missed_checkout_hours": 1}}, headers=login(MGR))   # even a short no-shift limit
+    night = Shift(name="Night", start_time=time(17, 0), end_time=time(5, 0), kind="work")
+    db.add(night)
+    db.flush()
+    emp = db.scalar(select(Employee).where(Employee.email == "steward.mk@example.test"))
+    db.add(AttendanceRecord(employee_id=emp.id, location_id=loc_id(db, "MK"), shift_id=night.id, local_date=datetime(2026, 3, 2).date(),
+                            check_in_at=datetime(2026, 3, 2, 14, 0), open_flag=1))                  # 18:00 Dubai
+    db.commit()
+    clock.set(2026, 3, 2, 16, 0)                                                                      # 20:00 Dubai: only two hours in
+    run(db, clock)
+    clock.set(2026, 3, 3, 0, 30)                                                                      # 04:30 Dubai: still before 05:00
+    run(db, clock)
+    assert notes(db, "missed_checkout") == []
+    clock.set(2026, 3, 3, 3, 30)                                                                      # 07:30 Dubai: two hours past the end
+    run(db, clock)
+    assert emails(db, notes(db, "missed_checkout")) >= {"manager@example.test", "steward.mk@example.test"}
+
+
+def test_turning_off_a_monitoring_point_stops_its_alerts_and_closes_the_open_ones(client, login, db, clock):
+    from app.models import EquipmentSchedule
+    eq = db.scalar(select(Equipment).where(Equipment.location_id == loc_id(db, "MK"), Equipment.active.is_(True)))
+    sched = db.scalar(select(EquipmentSchedule).where(EquipmentSchedule.equipment_id == eq.id, EquipmentSchedule.active.is_(True)))
+    clock.set(2026, 3, 2, 12, 0)
+    run(db, clock)
+    assert [n for n in notes(db, "monitoring_overdue") if f":{sched.id}:" in n.dedupe_key]            # the check went overdue
+    eq.active = False
+    db.commit()
+    run(db, clock)
+    stale = [n for n in notes(db, "monitoring_overdue") if f":{sched.id}:" in n.dedupe_key]
+    assert stale and all(n.resolved_at is not None and n.read_at is not None for n in stale)           # closed, no longer pending
+    clock.advance(hours=3)
+    before = len(notes(db, "monitoring_overdue"))
+    run(db, clock)
+    assert len(notes(db, "monitoring_overdue")) == before                                              # and nothing new while it is off
+
+
+def test_a_night_shift_in_progress_is_not_listed_as_a_missed_checkout_in_the_digest(client, login, db, clock):
+    from app.services import summary
+    night = Shift(name="Night", start_time=time(17, 0), end_time=time(5, 0), kind="work")
+    db.add(night)
+    db.flush()
+    emp = db.scalar(select(Employee).where(Employee.email == "steward.mk@example.test"))
+    rec = AttendanceRecord(employee_id=emp.id, location_id=loc_id(db, "MK"), shift_id=night.id, local_date=datetime(2026, 3, 2).date(),
+                           check_in_at=datetime(2026, 3, 2, 14, 0), open_flag=1)                  # 18:00 Dubai
+    db.add(rec)
+    db.commit()
+    assert not summary.checkout_overdue(db, rec, datetime(2026, 3, 2, 23, 0))                     # 03:00 Dubai, mid-shift
+    assert summary.checkout_overdue(db, rec, datetime(2026, 3, 3, 3, 30))                         # 07:30 Dubai
+
+
+def overdue_titles(db):
+    return [n for n in notes(db, "task_overdue") if n.location_id == loc_id(db, "MK")]
+
+
+def test_a_task_is_not_overdue_until_its_grace_period_has_passed(client, login, db, clock):
+    generate(client, login, db)
+    daily = lambda: next(t for t in client.get("/api/checklists/instances?size=200", headers=login(SUP)).json()["items"] if t["due_at"] and t["due_at"].startswith("2026-03-02T09:30"))
+    clock.set(2026, 3, 2, 9, 40)                                         # 13:40 Dubai: ten minutes after the 13:30 deadline, inside the 15 minute grace
+    run(db, clock)
+    assert daily()["effective_status"] != "overdue" and overdue_titles(db) == []
+    clock.set(2026, 3, 2, 9, 50)                                         # twenty minutes after: grace is over
+    run(db, clock)
+    assert daily()["effective_status"] == "overdue" and overdue_titles(db)
+    client.put("/api/settings", json={"values": {"checklist.grace_minutes": 0}}, headers=login(MGR))
+    assert daily()["effective_status"] == "overdue"
+
+
+def test_overdue_alerts_can_be_limited_to_higher_priority_tasks(client, login, db, clock):
+    generate(client, login, db)
+    m = login(MGR)
+
+    def alerted():                                                                                      # tasks counted in the group overdue alerts ("3 task(s) overdue since ...")
+        groups = {n.dedupe_key: int(n.title.split()[0]) for n in overdue_titles(db) if n.dedupe_key.startswith("overdue:")}   # one group alert reaches several people
+        return sum(groups.values())
+
+    clock.set(2026, 3, 2, 18, 0)                                                                         # evening: every daily task is overdue
+    client.put("/api/settings", json={"values": {"checklist.grace_minutes": 0, "checklist.alert_priority": 1}}, headers=m)
+    run(db, clock)
+    tasks = client.get(f"/api/checklists/instances?location_id={loc_id(db, 'MK')}&size=200", headers=m).json()["items"]
+    overdue = [t for t in tasks if t["effective_status"] == "overdue"]
+    high = [t for t in overdue if t["priority"] in ("high", "critical")]
+    assert len(overdue) > len(high) > 0                                                                  # normal tasks are overdue on screen
+    assert alerted() == len(high)                                                                        # but only the higher priority ones alert
+    client.put("/api/settings", json={"values": {"checklist.alert_priority": 2}}, headers=m)
+    for n in notes(db, "task_overdue"):
+        db.delete(n)
+    db.commit()
+    run(db, clock)
+    assert alerted() == 0                                                                                # none of these is critical
+    client.put("/api/settings", json={"values": {"checklist.alert_priority": 0}}, headers=m)
+    run(db, clock)
+    assert alerted() == len(overdue)                                                                     # with no limit every overdue task alerts
+
+
+def test_a_closed_day_waives_tasks_stops_generation_and_silences_alerts(client, login, db, clock):
+    from app.models import ChecklistInstance
+    m = login(MGR)
+    mk = loc_id(db, "MK")
+    generate(client, login, db)
+    made = client.post("/api/closures", json={"location_id": mk, "start_date": "2026-03-02", "end_date": "2026-03-02", "reason": "Private event"}, headers=m)
+    assert made.status_code == 201 and made.json()["tasks_waived"] > 0
+    assert client.post("/api/closures", json={"start_date": "2026-03-02", "end_date": "2026-03-02", "reason": "x"}, headers=login(SUP)).status_code == 403
+    db.expire_all()
+    mk_tasks = db.scalars(select(ChecklistInstance).where(ChecklistInstance.location_id == mk, ChecklistInstance.local_date == datetime(2026, 3, 2).date())).all()
+    assert mk_tasks and all(t.status == "waived" and t.waive_reason == "Closed: Private event" for t in mk_tasks)
+    no_grace(client, login)
+    clock.set(2026, 3, 2, 18, 0)                                                                         # late evening: everything would be overdue
+    run(db, clock)
+    assert [n for n in notes(db, "task_overdue") if n.location_id == mk] == []
+    assert [n for n in notes(db, "monitoring_overdue") if n.location_id == mk] == []
+    assert [n for n in notes(db, "no_checkin") if n.location_id == mk] == []
+    # tomorrow is not closed
+    clock.set(2026, 3, 3, 3, 0)
+    run(db, clock)
+    assert client.post("/api/checklists/generate", json={"location_id": mk}, headers=m).json()["created"] > 0
+    assert client.delete(f"/api/closures/{made.json()['id']}", headers=m).status_code == 200

@@ -58,7 +58,6 @@ export function StockPostModal({ item, defaultLocation, onClose, onPosted }: Pos
         <Field label={needsReason ? 'Reason (required)' : 'Reason (optional)'}>
           <Input value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>
-        {type === 'adjustment' && <p className="text-sm text-ink-muted">Adjustments are recorded as new ledger entries and audited. History is never edited.</p>}
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={!qty || Number(qty) === 0 || (needsReason && reason.trim().length < 5)} onClick={submit}>Post</Button>

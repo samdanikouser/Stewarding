@@ -2,7 +2,7 @@ from sqlalchemy import select
 
 from app.models import Notification
 
-from .helpers import MGR, STEWARD, SUP, loc_id
+from .helpers import MGR, STEWARD, SUP, loc_id, make_lot
 
 
 def point(client, h, db, kind="Sanitising", code="SN-T-1", loc="MK"):
@@ -26,11 +26,13 @@ def due_for(client, h, eq):
 
 
 def test_a_ppm_check_passes_and_fails_against_its_own_limits(client, login, db, clock):
+    clock.set(2026, 3, 2, 4, 0)
     m = login(MGR)
     eq = point(client, m, db)
     sched = check(client, m, eq).json()
     low = record(client, login(STEWARD), eq, sched, 150).json()
     assert low["passed"] is False and low["display"] == "150 ppm" and low["unit"] == "ppm"
+    clock.advance(days=1)
     ok = record(client, login(STEWARD), eq, sched, 300).json()
     assert ok["passed"] is True and ok["parameter"] == "Concentration"
     alert = db.scalar(select(Notification).where(Notification.kind == "monitoring_failed"))
@@ -38,6 +40,7 @@ def test_a_ppm_check_passes_and_fails_against_its_own_limits(client, login, db, 
 
 
 def test_yes_no_checks_need_no_limits_and_only_yes_passes(client, login, db, clock):
+    clock.set(2026, 3, 2, 4, 0)
     m = login(MGR)
     eq = point(client, m, db, kind="Defrosting", code="DF-T-1")
     sched = check(client, m, eq, stage="Defrosted", parameter="Check", unit=None, value_type="yes_no",
@@ -46,10 +49,12 @@ def test_yes_no_checks_need_no_limits_and_only_yes_passes(client, login, db, clo
     assert record(client, m, eq, sched, 2).status_code == 400
     no = record(client, m, eq, sched, 0).json()
     assert no["passed"] is False and no["display"] == "No"
+    clock.advance(days=1)
     assert record(client, m, eq, sched, 1).json()["display"] == "Yes"
 
 
 def test_a_check_can_demand_a_batch_reference(client, login, db, clock):
+    clock.set(2026, 3, 2, 4, 0)
     m = login(MGR)
     eq = point(client, m, db, kind="Cooking", code="CK-T-1")
     sched = check(client, m, eq, stage="Core", parameter="Temperature", unit="°C", min_value=75, max_value=120,
@@ -101,6 +106,7 @@ def test_templates_create_ready_made_monitoring_points(client, login, db):
 
 
 def test_every_template_check_can_be_recorded(client, login, db, clock):
+    clock.set(2026, 3, 2, 18, 30)
     m = login(MGR)
     templates = client.get("/api/equipment/templates", headers=m).json()
     for t in templates:
@@ -109,6 +115,8 @@ def test_every_template_check_can_be_recorded(client, login, db, clock):
         for sched in sorted(made["schedules"], key=lambda c: c["phase"] == "finish"):
             value = 1 if sched["value_type"] == "yes_no" else (float(sched["min_value"] or 0) + float(sched["max_value"] or 0)) / 2
             extra = {"reference": "Batch 1"} if sched["require_reference"] else {}
+            if sched["trace_lots"] and sched["phase"] != "finish":
+                extra["lot_ids"] = [make_lot(made["location_id"])]
             if sched["phase"] == "finish":
                 extra["start_reading_id"] = started
             r = record(client, m, made, sched, value, **extra)

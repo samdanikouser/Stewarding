@@ -70,9 +70,10 @@ def _record(db: Session, user: User, kind: str, date_from: date | None, date_to:
 @router.get("/records/{kind}")
 def record(kind: str, date_from: date | None = None, date_to: date | None = None, location_id: int | None = None,
            equipment_id: int | None = None, employee_id: int | None = None, supplier_id: int | None = None,
-           item_id: int | None = None, movement: str | None = None, frequency: str | None = None,
+           item_id: int | None = None, movement: str | None = None, frequency: str | None = None, status: str | None = None,
+           food_group: str | None = None, equipment_kind: str | None = None, template_id: int | None = None,
            user: User = Depends(require("report.view")), db: Session = Depends(get_db)):
-    f = Filters(location_id, equipment_id, employee_id, supplier_id, item_id, movement, frequency)
+    f = Filters(location_id, equipment_id, employee_id, supplier_id, item_id, movement, frequency, status, food_group, equipment_kind, template_id)
     doc = _record(db, user, kind, date_from, date_to, f)
     return {**doc, "groups": [{**g, "row_count": len(g["rows"]), "rows": g["rows"][:PREVIEW_ROWS]} for g in doc["groups"]]}
 
@@ -81,9 +82,10 @@ def record(kind: str, date_from: date | None = None, date_to: date | None = None
 def export_record(kind: str, fmt: Literal["csv", "xlsx", "pdf"] = "pdf", date_from: date | None = None,
                   date_to: date | None = None, location_id: int | None = None, equipment_id: int | None = None,
                   employee_id: int | None = None, supplier_id: int | None = None, item_id: int | None = None,
-                  movement: str | None = None, frequency: str | None = None,
+                  movement: str | None = None, frequency: str | None = None, status: str | None = None, food_group: str | None = None,
+                  equipment_kind: str | None = None, template_id: int | None = None,
                   user: User = Depends(require("report.export")), db: Session = Depends(get_db)):
-    f = Filters(location_id, equipment_id, employee_id, supplier_id, item_id, movement, frequency)
+    f = Filters(location_id, equipment_id, employee_id, supplier_id, item_id, movement, frequency, status, food_group, equipment_kind, template_id)
     doc = _record(db, user, kind, date_from, date_to, f)
     rows = sum(len(g["rows"]) for g in doc["groups"])
     if fmt == "pdf" and rows > MAX_PDF_ROWS:

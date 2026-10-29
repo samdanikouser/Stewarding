@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { LocationSelect } from '@/components/LocationSelect'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -12,6 +13,7 @@ import { StatusBadge } from '@/components/ui/status-badge'
 import { EmptyState, Table, Td, Th } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
+import { cn } from '@/lib/utils'
 import { label } from '@/lib/format'
 import { useRun } from '@/lib/toast'
 import { qs, useApi } from '@/lib/useApi'
@@ -51,6 +53,7 @@ export function EquipmentPage({ embedded = false }: { embedded?: boolean }) {
   const { data, reload } = useApi<EquipmentItem[]>(locationId ? `/equipment${qs({ location_id: locationId })}` : null)
   const [editing, setEditing] = useState<{ equipmentId: number; schedule: Schedule | null } | null>(null)
   const [adding, setAdding] = useState(false)
+  const [deleting, setDeleting] = useState<{ kind: 'point' | 'check'; id: number; name: string } | null>(null)
   const [renaming, setRenaming] = useState<{ id: number; name: string } | null>(null)
   const [presetOpen, setPresetOpen] = useState(false)
   const [preset, setPreset] = useState('')
@@ -60,6 +63,23 @@ export function EquipmentPage({ embedded = false }: { embedded?: boolean }) {
 
   async function setStatus(eq: EquipmentItem, status: string) {
     if (await run(() => api(`/equipment/${eq.id}`, { method: 'PUT', body: { status } }), 'Status updated')) reload()
+  }
+
+  async function setPointActive(eq: EquipmentItem) {
+    if (await run(() => api(`/equipment/${eq.id}`, { method: 'PUT', body: { active: !eq.active } }), eq.active ? 'Made inactive' : 'Made active')) reload()
+  }
+
+  async function setCheckActive(s: Schedule) {
+    if (await run(() => api(`/equipment/schedules/${s.id}/active`, { method: 'PUT', body: { active: !s.active } }), s.active ? 'Made inactive' : 'Made active')) reload()
+  }
+
+  async function confirmDelete() {
+    if (!deleting) return
+    const path = deleting.kind === 'point' ? `/equipment/${deleting.id}` : `/equipment/schedules/${deleting.id}`
+    if (await run(() => api(path, { method: 'DELETE' }), 'Deleted')) {
+      setDeleting(null)
+      reload()
+    }
   }
 
   async function rename(event: FormEvent) {
@@ -82,33 +102,29 @@ export function EquipmentPage({ embedded = false }: { embedded?: boolean }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {embedded ? <h2 className="text-lg font-semibold">Monitoring points and checks</h2> : <h1 className="text-2xl font-semibold">Monitoring Setup</h1>}
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <LocationSelect value={locationId} onChange={setLocationId} />
           {canManage && <Button onClick={() => setPresetOpen(true)}><Plus className="h-4 w-4" /> From template</Button>}
           {canManage && <Button variant="outline" onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> Create form</Button>}
         </div>
       </div>
-      <p className="text-sm text-ink-muted">
-        A log form is anything you keep a record for: a chiller, a freezer, a dishwasher, a cooking or cooling batch, a delivery. Create your own form with the fields and rules you need, or start from a template.
-        Each point has checks. A check says what is measured (a temperature, ppm, pH or a yes or no), the limits, and how often it is due:
-        at startup, at set times, every few minutes, on chosen days or monthly. Take the limits from your approved food-safety procedure.
-      </p>
 
-      {data?.length === 0 && <EmptyState title="No monitoring points at this location" hint="Add one from a template, such as a chiller, freezer, cooking or traceability log." />}
+      {data?.length === 0 && <EmptyState title="No monitoring points at this location" />}
       {data?.map((eq) => (
-        <Card key={eq.id} className={eq.needs_attention ? 'border-warn/60' : undefined}>
+        <Card key={eq.id} className={cn(eq.needs_attention && 'border-warn/60', !eq.active && 'opacity-70')}>
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center gap-2">
               <Wrench className="h-4 w-4 text-brand" aria-hidden /> {eq.name}
               <span className="text-sm font-normal text-ink-muted">{eq.code} - {label(eq.kind)}</span>
               <StatusBadge status={eq.status} />
+              {!eq.active && <StatusBadge status="inactive" />}
               {eq.needs_attention && <Badge tone="warn">Needs attention ({eq.recent_failures} recent failures)</Badge>}
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-5 p-6 pt-3">
             {eq.maintenance_notes && <p className="text-sm text-ink-muted">{eq.maintenance_notes}</p>}
             {canManage && (
               <div className="flex flex-wrap gap-2">
@@ -118,18 +134,28 @@ export function EquipmentPage({ embedded = false }: { embedded?: boolean }) {
                   <option value="out_of_service">Out of service</option>
                 </Select>
                 <Button size="sm" variant="outline" onClick={() => setRenaming({ id: eq.id, name: eq.name })}>Rename</Button>
+                <Button size="sm" variant="outline" className="whitespace-nowrap" onClick={() => setPointActive(eq)}>{eq.active ? 'Make inactive' : 'Make active'}</Button>
+                <Button size="sm" variant="outline" onClick={() => setDeleting({ kind: 'point', id: eq.id, name: eq.name })}>Delete</Button>
               </div>
             )}
             <Table>
               <thead><tr><Th>Check</Th><Th>Measures</Th><Th>When</Th><Th>Limits</Th>{canManage && <Th />}</tr></thead>
               <tbody>
                 {eq.schedules.map((s) => (
-                  <tr key={s.id}>
-                    <Td>{s.stage}{s.require_reference && <Badge className="ml-2">{s.reference_label ?? 'Reference'}</Badge>}{s.phase && <Badge className="ml-2">{s.phase === 'start' ? 'Time in' : 'Time out'}</Badge>}</Td>
+                  <tr key={s.id} className={s.active ? undefined : 'opacity-60'}>
+                    <Td>{s.stage}{!s.active && <Badge className="ml-2">Inactive</Badge>}{s.require_reference && <Badge className="ml-2">{s.reference_label ?? 'Reference'}</Badge>}{s.trace_lots && <Badge className="ml-2">Food lots</Badge>}{s.phase && <Badge className="ml-2">{s.phase === 'start' ? 'Time in' : 'Time out'}</Badge>}</Td>
                     <Td>{({ yes_no: 'Yes or no', text: 'Short text', choice: 'Dropdown' } as Record<string, string>)[s.value_type] ?? s.parameter}</Td>
                     <Td>{when(s)}</Td>
                     <Td>{limits(s)}</Td>
-                    {canManage && <Td><Button size="sm" variant="outline" onClick={() => setEditing({ equipmentId: eq.id, schedule: s })}>Edit</Button></Td>}
+                    {canManage && (
+                      <Td>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setEditing({ equipmentId: eq.id, schedule: s })}>Edit</Button>
+                          <Button size="sm" variant="outline" className="whitespace-nowrap" onClick={() => setCheckActive(s)}>{s.active ? 'Make inactive' : 'Make active'}</Button>
+                          <Button size="sm" variant="outline" onClick={() => setDeleting({ kind: 'check', id: s.id, name: s.stage })}>Delete</Button>
+                        </div>
+                      </Td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -139,10 +165,18 @@ export function EquipmentPage({ embedded = false }: { embedded?: boolean }) {
         </Card>
       ))}
 
+      <ConfirmDialog open={deleting !== null} title={deleting?.kind === 'point' ? 'Delete monitoring point' : 'Delete check'}
+        message={`Delete ${deleting?.name ?? ''}? This cannot be undone. Anything with recorded readings cannot be deleted; make it inactive instead.`}
+        confirmLabel="Delete" onConfirm={confirmDelete} onCancel={() => setDeleting(null)} />
+
       {editing && <CheckFormModal equipmentId={editing.equipmentId} schedule={editing.schedule} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload() }} />}
 
-      <Modal open={presetOpen} title="Add from template" onClose={() => setPresetOpen(false)}>
-        <form onSubmit={addFromTemplate} className="space-y-3">
+      <Modal open={presetOpen} title="Add from template" description="A ready-made monitoring point with its checks and limits." onClose={() => setPresetOpen(false)}
+        footer={<>
+          <Button type="button" variant="outline" onClick={() => setPresetOpen(false)}>Cancel</Button>
+          <Button type="submit" form="template-form" disabled={!preset || !locationId}>Add monitoring point</Button>
+        </>}>
+        <form id="template-form" onSubmit={addFromTemplate} className="space-y-5">
           <Field label="Template">
             <Select required value={preset} onChange={(e) => setPreset(e.target.value)}>
               <option value="">Select</option>
@@ -157,22 +191,16 @@ export function EquipmentPage({ embedded = false }: { embedded?: boolean }) {
             </ul>
           )}
           <Field label="Name (optional)"><Input value={presetName} maxLength={120} onChange={(e) => setPresetName(e.target.value)} /></Field>
-          <p className="text-xs text-ink-muted">The point is created with its checks; change the limits and times afterwards if your procedure differs.</p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setPresetOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={!preset || !locationId}>Add</Button>
-          </div>
         </form>
       </Modal>
 
-      <Modal open={renaming !== null} title="Rename monitoring point" onClose={() => setRenaming(null)}>
-        <form onSubmit={rename} className="space-y-3">
+      <Modal open={renaming !== null} size="sm" title="Rename monitoring point" onClose={() => setRenaming(null)}
+        footer={<>
+          <Button type="button" variant="outline" onClick={() => setRenaming(null)}>Cancel</Button>
+          <Button type="submit" form="rename-form" disabled={!renaming || renaming.name.trim().length < 2}>Save name</Button>
+        </>}>
+        <form id="rename-form" onSubmit={rename} className="space-y-3">
           <Field label="Name"><Input required minLength={2} maxLength={120} value={renaming?.name ?? ''} onChange={(e) => setRenaming((r) => r && { ...r, name: e.target.value })} /></Field>
-          <p className="text-xs text-ink-muted">The code and the recorded history stay the same; only the name shown changes.</p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setRenaming(null)}>Cancel</Button>
-            <Button type="submit" disabled={!renaming || renaming.name.trim().length < 2}>Save</Button>
-          </div>
         </form>
       </Modal>
 

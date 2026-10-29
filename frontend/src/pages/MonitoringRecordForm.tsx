@@ -3,6 +3,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { LotPicker, type LotChoice } from '@/components/LotPicker'
 import { SignaturePad } from '@/components/SignaturePad'
 import { Select } from '@/components/ui/select'
 import { api, uploadFile } from '@/lib/api'
@@ -21,6 +22,7 @@ export interface Schedule {
   fail_options: string[] | null
   max_length: number | null
   require_reference: boolean
+  trace_lots?: boolean
   required: boolean
   reference_label: string | null
   phase: 'start' | 'finish' | null
@@ -42,6 +44,7 @@ export interface EquipmentItem {
   kind: string
   location_id: number
   status: string
+  active: boolean
   supervisor_id: number | null
   procedure_reference: string | null
   maintenance_notes: string | null
@@ -64,6 +67,7 @@ interface RecordFormProps {
   onSaved: () => void
   onClearRetest: () => void
   doneSchedules?: Set<number>
+  closedSchedules?: Set<number>
 }
 
 const num = (v: number | string | null) => (v === null ? null : Number(v))
@@ -89,13 +93,17 @@ function firstOfEachCycle(schedules: Schedule[]): Schedule[] {
   return schedules.filter((s) => s.phase !== 'finish' && cycleOf(s, schedules)[0] === s)
 }
 
-export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetest, doneSchedules }: RecordFormProps) {
+const limitsText = (s: { min_value?: string | number | null; max_value?: string | number | null }) =>
+  s.min_value != null && s.max_value != null ? ` ${s.min_value}-${s.max_value}` : s.max_value != null ? ` max ${s.max_value}` : s.min_value != null ? ` min ${s.min_value}` : ''
+
+export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetest, doneSchedules, closedSchedules }: RecordFormProps) {
   const run = useRun()
   const standardActions = useLookup('corrective_action')
   const [equipmentId, setEquipmentId] = useState('')
   const [scheduleId, setScheduleId] = useState('')
   const [values, setValues] = useState<Record<number, string>>({})
   const [reference, setReference] = useState('')
+  const [lots, setLots] = useState<LotChoice[]>([])
   const [comment, setComment] = useState('')
   const [action, setAction] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -112,22 +120,32 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
   const selected = equipment.find((e) => String(e.id) === equipmentId)
   const schedules = selected?.schedules.filter((s) => s.active) ?? []
   const schedule = schedules.find((s) => String(s.id) === scheduleId)
-  const cycle = schedule ? (prefill?.retestOf ? [schedule] : cycleOf(schedule, schedules)) : []
-  const cycles = firstOfEachCycle(schedules)
+  const fullCycle = schedule ? (prefill?.retestOf ? [schedule] : cycleOf(schedule, schedules)) : []
+  const outstanding = prefill?.retestOf || prefill?.startReadingId ? fullCycle : fullCycle.filter((s) => !doneSchedules?.has(s.id))
+  const cycle = outstanding.length > 0 ? outstanding : fullCycle
+  const cycles = availableCycles(schedules)
   const results = cycle.map((s) => verdict(values[s.id] ?? '', s))
   const anyFail = results.includes('fail')
   const complete = cycle.length > 0 && cycle.every((s) => !s.required || (values[s.id] ?? '') !== '')
-  const title = (s: Schedule) => `${cycle.length > 1 && label(s.stage) !== s.parameter ? `${label(s.stage)}: ${s.parameter}` : s.parameter}${s.required ? '' : ' (optional)'}`
+  const title = (s: Schedule) => `${fullCycle.length > 1 && label(s.stage) !== s.parameter ? `${label(s.stage)}: ${s.parameter}` : s.parameter}${s.required ? '' : ' (optional)'}`
   const setBlob = (s: Schedule, blob: Blob | null) => {
     setBlobs((b) => ({ ...b, ...(blob ? { [s.id]: blob } : {}) }))
     setValues((v) => ({ ...v, [s.id]: blob ? 'file' : '' }))
   }
-  const needsReference = cycle.some((s) => s.require_reference)
+  const needsReference = cycle.some((s) => s.require_reference && !s.trace_lots)
+  const needsLots = !prefill?.startReadingId && !prefill?.retestOf && cycle.some((s) => s.trace_lots)
   const alreadyDone = !prefill?.retestOf && cycle.length > 0 && cycle.every((s) => doneSchedules?.has(s.id))
+
+  function availableCycles(list: Schedule[]): Schedule[] {
+    return firstOfEachCycle(list).filter((c) => {
+      const group = cycleOf(c, list)
+      return !group.every((s) => closedSchedules?.has(s.id)) && !group.every((s) => doneSchedules?.has(s.id))
+    })
+  }
 
   function pickPoint(id: string) {
     const list = equipment.find((e) => String(e.id) === id)?.schedules.filter((s) => s.active) ?? []
-    const only = firstOfEachCycle(list)
+    const only = availableCycles(list)
     setEquipmentId(id)
     setScheduleId(only.length === 1 ? String(only[0].id) : '')
     setValues({})
@@ -138,7 +156,7 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
     setBusy(true)
     const ok = await run(async () => {
       const evidence = file ? await uploadFile(file) : null
-      const common = { comment: comment || null, evidence_path: evidence, corrective_action: action || null, reference: reference || null }
+      const common = { comment: comment || null, evidence_path: evidence, corrective_action: action || null, reference: reference || null, lot_ids: lots.map((l) => l.id) }
       const body = { equipment_id: Number(equipmentId), start_reading_id: prefill?.startReadingId ?? null }
       if (prefill?.retestOf) {
         await api('/monitoring/readings', { body: { equipment_id: Number(equipmentId), schedule_id: Number(scheduleId), ...answerOf(schedule, values[Number(scheduleId)]), retest_of_id: prefill.retestOf, ...common } })
@@ -155,6 +173,7 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
     if (ok) {
       setValues({})
       setReference('')
+      setLots([])
       setComment('')
       setAction('')
       setFile(null)
@@ -192,9 +211,9 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
           </Field>
         )}
       </div>
+      {selected && !prefill?.retestOf && cycles.length === 0 && <p className="rounded-md bg-surface-muted px-3 py-2 text-sm">Nothing is open for this point right now. Checks open shortly before they are due.</p>}
       {prefill?.startReadingId && <p className="rounded-md bg-surface-muted px-3 py-2 text-sm">Time out for <span className="font-medium">{prefill.item ?? 'this entry'}</span>. The time out is stamped when you save.</p>}
       {alreadyDone && <p role="alert" className="rounded-md bg-ok-soft px-3 py-2 text-sm text-ok">This check is already recorded for this time. It is due again at the next scheduled time.</p>}
-      {cycle.length > 1 && <p className="text-sm text-ink-muted">These checks are recorded together: {cycle.map((s) => label(s.stage)).join(', ')}. Questions marked optional can be left blank.</p>}
       <div className="space-y-3">
         {cycle.map((s, i) => (
           <div key={s.id} className="flex flex-wrap items-end gap-3">
@@ -216,7 +235,7 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
             ) : s.value_type === 'signature' ? (
               <Field label={title(s)}><SignaturePad onChange={(png) => setBlob(s, png)} /></Field>
             ) : s.value_type === 'image' ? (
-              <Field label={title(s)} hint={blobs[s.id] && values[s.id] ? 'Photo selected' : 'Take a photo or choose one'}>
+              <Field label={title(s)}>
                 <Input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={(e) => setBlob(s, e.target.files?.[0] ?? null)} />
               </Field>
             ) : s.value_type === 'date' || s.value_type === 'time' ? (
@@ -224,12 +243,11 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
                 <Input required={s.required} type={s.value_type} className="w-44" value={values[s.id] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [s.id]: e.target.value }))} />
               </Field>
             ) : s.value_type === 'text' ? (
-              <Field label={title(s)} hint={`Up to ${s.max_length ?? 200} characters`}>
+              <Field label={title(s)}>
                 <Input required={s.required} maxLength={s.max_length ?? 200} className="w-72" value={values[s.id] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [s.id]: e.target.value }))} />
               </Field>
             ) : (
-              <Field label={`${cycle.length > 1 ? `${label(s.stage)}: ` : ''}${s.parameter}${s.unit ? ` (${s.unit})` : ''}`}
-                hint={`Acceptable ${s.min_value ?? 'no minimum'} to ${s.max_value ?? 'no maximum'} ${s.unit ?? ''}`}>
+              <Field label={`${fullCycle.length > 1 ? `${label(s.stage)}: ` : ''}${s.parameter}${s.unit ? ` (${s.unit})` : ''}${limitsText(s)}`}>
                 <Input required={s.required} type="number" step="any" inputMode="decimal" className="w-36" value={values[s.id] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [s.id]: e.target.value }))} />
               </Field>
             )}
@@ -237,15 +255,21 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
           </div>
         ))}
         {needsReference && (
-          <Field label={cycle.find((s) => s.reference_label)?.reference_label ?? 'Batch, lot or product'} hint="Required for this check.">
-            <Input required maxLength={120} className="w-56" value={reference} onChange={(e) => setReference(e.target.value)} />
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium">{cycle.find((s) => s.reference_label)?.reference_label ?? 'Batch, lot or product'}</p>
+            <LotPicker value={lots} onChange={setLots} allowCustom={{ value: reference, onChange: setReference }} />
+          </div>
+        )}
+        {needsLots && (
+          <Field label="Food lot or lots">
+            <LotPicker value={lots} onChange={setLots} />
           </Field>
         )}
       </div>
       {anyFail && (
-        <div className="space-y-2 rounded-md border border-danger/40 bg-danger-soft p-3">
+        <div className="space-y-2 rounded-xl border border-danger/20 border-l-4 border-l-danger bg-danger-soft p-3">
           <p className="text-sm font-medium text-danger">A failed check will be recorded as failed and your supervisor alerted.</p>
-          <Field label="Corrective action taken" hint="Pick a standard action or type your own. You can also add it afterwards from the open actions list.">
+          <Field label="Corrective action taken">
             <Input list="standard-actions" value={action} onChange={(e) => setAction(e.target.value)} />
             <datalist id="standard-actions">{standardActions.map((a) => <option key={a} value={a} />)}</datalist>
           </Field>
@@ -255,9 +279,11 @@ export function MonitoringRecordForm({ equipment, prefill, onSaved, onClearRetes
       <Field label="Photo evidence (optional)">
         <Input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
       </Field>
-      <Button type="submit" className="w-full sm:w-auto" disabled={busy || alreadyDone || !complete || (needsReference && reference.trim() === '')}>
-        {busy ? 'Saving...' : prefill?.retestOf ? 'Record retest' : cycle.length > 1 ? 'Record all' : 'Record check'}
-      </Button>
+      <div className="sticky -bottom-5 -mx-6 -mb-5 border-t border-border bg-surface px-6 py-4">
+        <Button type="submit" className="w-full sm:w-auto" disabled={busy || alreadyDone || !complete || (needsReference && reference.trim() === '' && lots.length === 0) || (needsLots && lots.length === 0)}>
+          {busy ? 'Saving...' : prefill?.retestOf ? 'Record retest' : cycle.length > 1 ? 'Record all' : 'Record check'}
+        </Button>
+      </div>
     </form>
   )
 }

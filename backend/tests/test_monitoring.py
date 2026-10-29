@@ -176,6 +176,30 @@ def test_due_checks_move_from_due_to_done_and_overdue(client, login, clock):
     assert rinse("10:00") == "upcoming"  # 14:00 slot
 
 
+def test_a_check_opens_a_grace_period_before_its_time(client, login, clock):
+    h, mgr = login(STEWARD), login(MGR)
+    eq, _ = mk_stage(client, h)
+    daily = client.post(f"/api/equipment/{eq['id']}/schedules", headers=mgr, json={
+        "stage": "oil", "timing": "checkpoint", "time_of_day": "09:00:00", "min_value": 0, "max_value": 100}).json()
+    loop = client.post(f"/api/equipment/{eq['id']}/schedules", headers=mgr, json={
+        "stage": "loop", "timing": "interval", "time_of_day": "12:00:00", "interval_minutes": 240, "min_value": 0, "max_value": 100}).json()
+
+    def status(sched, slot_utc):
+        return next(d["status"] for d in client.get("/api/monitoring/due", headers=h).json()
+                    if d["schedule_id"] == sched["id"] and d["slot_at"][11:16] == slot_utc)
+
+    assert (status(daily, "05:00"), status(loop, "08:00")) == ("upcoming", "upcoming")          # it is 06:05 in Dubai
+    assert next(d for d in client.get("/api/monitoring/due", headers=h).json() if d["schedule_id"] == daily["id"])["open"] is False
+    early = record(client, h, eq, daily, 50)
+    assert early.status_code == 409 and early.json()["detail"] == "oil opens at 08:30"
+    clock.advance(hours=2, minutes=25)                                                          # 08:30 in Dubai
+    assert record(client, h, eq, daily, 50).status_code == 201
+    assert status(daily, "05:00") == "done"
+    assert next(d for d in client.get("/api/monitoring/due", headers=h).json() if d["schedule_id"] == daily["id"])["open"] is True
+    assert record(client, h, eq, loop, 50).json()["detail"] == "loop opens at 11:30"
+    assert record(client, h, eq, daily, 51).status_code == 409
+
+
 def test_review_rules(client, login, clock):
     h, sup = login(STEWARD), login(SUP)
     eq, sched = mk_stage(client, h)
@@ -257,3 +281,20 @@ def test_a_batch_saves_everything_or_nothing(client, login, db, clock):
 def test_batch_recording_needs_a_login(client):
     body = {"equipment_id": 1, "readings": [{"schedule_id": 1, "value": 1}]}
     assert client.post("/api/monitoring/readings/batch", json=body).status_code == 401
+
+
+def test_a_batch_may_leave_out_a_stage_that_is_already_recorded_for_this_time(client, login, clock):
+    h = login(STEWARD)
+    eq, wash = mk_stage(client, h)
+    _, rinse = mk_stage(client, h, "final_rinse")
+
+    def batch(*schedules):
+        readings = [{"schedule_id": s["id"], "value": 85 if s is rinse else 60} for s in schedules]
+        return client.post("/api/monitoring/readings/batch", json={"equipment_id": eq["id"], "readings": readings}, headers=h)
+
+    missing = batch(rinse)
+    assert missing.status_code == 400 and "wash" in missing.json()["detail"]
+    assert record(client, h, eq, wash, 60).status_code == 201
+    done = batch(rinse)
+    assert done.status_code == 201 and [r["stage"] for r in done.json()] == ["final_rinse"]
+    assert batch(rinse).status_code == 409

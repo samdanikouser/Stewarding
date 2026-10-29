@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .. import timeutil
 from ..audit import audit
 from ..db import get_db
-from ..deps import check_location, require, scoped_locations
+from ..deps import check_location, employee_place, require, scoped_locations
 from ..models import AbsenceRecord, AttendanceRecord, Employee, EmployeeLocation, Location, User
 from ..pagination import paginate, row
 
@@ -26,7 +26,7 @@ FIELDS = ("id", "employee_id", "location_id", "local_date", "absence_type", "not
 
 class AbsenceIn(BaseModel):
     employee_id: int
-    location_id: int
+    location_id: int | None = None  # left out: where the employee works
     day: date
     day_to: date | None = None
     absence_type: AbsenceType
@@ -48,18 +48,16 @@ def _serialize(db: Session, record: AbsenceRecord) -> dict:
 @router.post("", status_code=201)
 def record_absence(body: AbsenceIn, user: User = Depends(require("attendance.absence")), db: Session = Depends(get_db)):
     """Records an absence, leave or day off for one day, or for every day from `day` to `day_to`; all or none."""
-    check_location(user, db, body.location_id)
     emp = db.get(Employee, body.employee_id)
-    works_here = emp and db.scalar(select(EmployeeLocation.employee_id).where(
-        EmployeeLocation.employee_id == emp.id, EmployeeLocation.location_id == body.location_id))
-    if not works_here or emp.status != "active":
+    if not emp or emp.status != "active":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Employee is not active at this location")
+    place = employee_place(user, db, emp, body.location_id)
     last = body.day_to or body.day
     if last < body.day:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The end date is before the start date")
     if (last - body.day).days >= MAX_RANGE_DAYS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A range covers at most {MAX_RANGE_DAYS} days")
-    today = timeutil.local_date(timeutil.utc_now(), db.get(Location, body.location_id).timezone)
+    today = timeutil.local_date(timeutil.utc_now(), place.timezone)
     if not (today - timedelta(days=PAST_DAYS) <= body.day and last <= today + timedelta(days=FUTURE_DAYS)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The dates must be within {PAST_DAYS} days back and {FUTURE_DAYS} days ahead")
     days = [body.day + timedelta(days=n) for n in range((last - body.day).days + 1)]
@@ -69,7 +67,7 @@ def record_absence(body: AbsenceIn, user: User = Depends(require("attendance.abs
         if db.scalar(select(AbsenceRecord.id).where(AbsenceRecord.employee_id == emp.id, AbsenceRecord.local_date == day,
                                                     AbsenceRecord.voided_at.is_(None))):
             raise HTTPException(status.HTTP_409_CONFLICT, f"{day.isoformat()} already has an absence, leave or day off recorded")
-    records = [AbsenceRecord(employee_id=emp.id, location_id=body.location_id, local_date=day, absence_type=body.absence_type,
+    records = [AbsenceRecord(employee_id=emp.id, location_id=place.id, local_date=day, absence_type=body.absence_type,
                              note=body.note, recorded_by=user.id) for day in days]
     try:
         db.add_all(records)

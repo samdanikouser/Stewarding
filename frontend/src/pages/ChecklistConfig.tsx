@@ -1,3 +1,4 @@
+import { Pencil, Plus, Power, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LocationSelect } from '@/components/LocationSelect'
@@ -6,13 +7,14 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { EmptyState } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { label } from '@/lib/format'
 import { useRun } from '@/lib/toast'
-import { useLookup } from '@/lib/useLookups'
 import { qs, useApi } from '@/lib/useApi'
+import { useLookup } from '@/lib/useLookups'
 import { ChecklistTaskModal, type ConfigTask } from '@/pages/ChecklistTaskModal'
 
 interface Template {
@@ -24,8 +26,16 @@ interface Template {
   tasks: ConfigTask[]
 }
 
+interface TemplateDraft {
+  id: number | null
+  name: string
+  category: string
+  frequency: string
+}
+
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const daysOf = (weekdays: string) => (weekdays.split(',').length === 7 ? 'Every day' : weekdays.split(',').map((d) => DAY_NAMES[Number(d)]).join(', '))
+const DANGER = 'border-danger/40 text-danger hover:bg-danger-soft'
 
 interface ConfigProps {
   locationId: number | null
@@ -36,25 +46,45 @@ export function ChecklistConfig({ locationId, onLocation }: ConfigProps) {
   const run = useRun()
   const { data, reload } = useApi<Template[]>(locationId ? `/checklists/templates${qs({ location_id: locationId })}` : null)
   const categories = useLookup('checklist_category')
-  const [name, setName] = useState('')
-  const [category, setCategory] = useState('')
-  const [frequency, setFrequency] = useState('daily')
+  const [template, setTemplate] = useState<TemplateDraft | null>(null)
   const [editing, setEditing] = useState<{ templateId: number; frequency: string; task: ConfigTask | null } | null>(null)
-  const [removing, setRemoving] = useState<ConfigTask | null>(null)
+  const [removingTask, setRemovingTask] = useState<ConfigTask | null>(null)
+  const [removingTemplate, setRemovingTemplate] = useState<Template | null>(null)
 
-  async function addTemplate(event: FormEvent) {
+  async function saveTemplate(event: FormEvent) {
     event.preventDefault()
-    const ok = await run(() => api('/checklists/templates', { body: { name, category: category || categories[0] || 'General', location_id: locationId, frequency } }), 'Template added')
+    if (!template) return
+    const body = { name: template.name, category: template.category || categories[0] || 'General', frequency: template.frequency }
+    const ok = await run(
+      () => template.id ? api(`/checklists/templates/${template.id}`, { method: 'PUT', body }) : api('/checklists/templates', { body: { ...body, location_id: locationId } }),
+      template.id ? 'Checklist updated' : 'Checklist added',
+    )
     if (ok) {
-      setName('')
+      setTemplate(null)
       reload()
     }
   }
 
+  async function setTemplateActive(t: Template) {
+    if (await run(() => api(`/checklists/templates/${t.id}`, { method: 'PUT', body: { active: !t.active } }), t.active ? 'Checklist made inactive' : 'Checklist made active')) reload()
+  }
+
+  async function setTaskActive(task: ConfigTask) {
+    const { id: _id, ...rest } = task
+    if (await run(() => api(`/checklists/tasks/${task.id}`, { method: 'PUT', body: { ...rest, active: !task.active } }), task.active ? 'Task made inactive' : 'Task made active')) reload()
+  }
+
   async function removeTask() {
-    if (!removing) return
-    const ok = await run(() => api(`/checklists/tasks/${removing.id}`, { method: 'DELETE' }), 'Task deactivated')
-    setRemoving(null)
+    if (!removingTask) return
+    const ok = await run(() => api(`/checklists/tasks/${removingTask.id}/remove`, { method: 'POST' }), 'Task deleted')
+    setRemovingTask(null)
+    if (ok) reload()
+  }
+
+  async function removeTemplate() {
+    if (!removingTemplate) return
+    const ok = await run(() => api(`/checklists/templates/${removingTemplate.id}`, { method: 'DELETE' }), 'Checklist deleted')
+    setRemovingTemplate(null)
     if (ok) reload()
   }
 
@@ -64,56 +94,101 @@ export function ChecklistConfig({ locationId, onLocation }: ConfigProps) {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <LocationSelect value={locationId} onChange={onLocation} />
-        <Button variant="outline" onClick={applyStarter}>Apply starter templates</Button>
+        <div className="flex flex-wrap gap-3">
+          <Button variant="outline" disabled={!locationId} onClick={applyStarter}>Apply starter templates</Button>
+          <Button disabled={!locationId} onClick={() => setTemplate({ id: null, name: '', category: categories[0] ?? 'General', frequency: 'daily' })}><Plus className="h-4 w-4" /> Add checklist</Button>
+        </div>
       </div>
 
-      <form onSubmit={addTemplate} className="flex flex-wrap items-end gap-3">
-        <Field label="New template name"><Input required value={name} onChange={(e) => setName(e.target.value)} /></Field>
-        <Field label="Category">
-          <Select value={category || categories[0] || ''} onChange={(e) => setCategory(e.target.value)}>
-            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-          </Select>
-        </Field>
-        <Field label="Frequency" hint="Sets the default days for new tasks; each task can repeat on any days.">
-          <Select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
-            <option value="per_shift">Once per shift</option>
-            <option value="custom">Custom</option>
-          </Select>
-        </Field>
-        <Button type="submit">Add template</Button>
-      </form>
-
-      {data?.length === 0 && <EmptyState title="No templates at this location" hint="Apply the starter templates or add your own." />}
+      {data?.length === 0 && <EmptyState title="No checklists at this location" />}
       {data?.map((t) => (
-        <Card key={t.id}>
-          <CardHeader><CardTitle className="flex items-center gap-2">{t.name} <Badge>{label(t.frequency)}</Badge></CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <ul className="divide-y divide-border text-sm">
-              {t.tasks.map((task) => (
-                <li key={task.id} className={`flex flex-wrap items-center justify-between gap-2 py-2 ${task.active ? '' : 'opacity-50'}`}>
-                  <span>{task.description}<span className="ml-2 text-xs text-ink-muted">{daysOf(task.weekdays)}</span></span>
-                  <span className="flex items-center gap-1">
-                    {task.requires_verification && <Badge tone="warn">Verify</Badge>}
-                    {task.requires_photo && <Badge>Photo</Badge>}
-                    {task.requires_reading && <Badge>Reading</Badge>}
-                    <Button size="sm" variant="outline" onClick={() => setEditing({ templateId: t.id, frequency: t.frequency, task })}>Edit</Button>
-                    {task.active ? <Button size="sm" variant="outline" onClick={() => setRemoving(task)}>Deactivate</Button> : <Badge>Inactive</Badge>}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <Button size="sm" variant="outline" onClick={() => setEditing({ templateId: t.id, frequency: t.frequency, task: null })}>Add task</Button>
+        <Card key={t.id} className={t.active ? undefined : 'bg-surface-muted/60'}>
+          <CardHeader className="flex-col gap-3 p-6 pb-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1.5">
+              <CardTitle className="flex flex-wrap items-center gap-2 text-lg">{t.name}</CardTitle>
+              <div className="flex flex-wrap gap-1.5">
+                <Badge>{label(t.frequency)}</Badge>
+                <Badge>{t.category}</Badge>
+                {!t.active && <Badge tone="warn">Inactive</Badge>}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => setTemplate({ id: t.id, name: t.name, category: t.category, frequency: t.frequency })}><Pencil className="h-3.5 w-3.5" /> Edit</Button>
+              <Button size="sm" variant="outline" onClick={() => setTemplateActive(t)}><Power className="h-3.5 w-3.5" /> {t.active ? 'Make inactive' : 'Make active'}</Button>
+              <Button size="sm" variant="outline" className={DANGER} onClick={() => setRemovingTemplate(t)}><Trash2 className="h-3.5 w-3.5" /> Delete</Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4 p-6 pt-3">
+            {t.tasks.length === 0 ? <p className="text-sm text-ink-muted">No tasks yet.</p> : (
+              <ul className="divide-y divide-border rounded-xl border border-border">
+                {t.tasks.map((task) => (
+                  <li key={task.id} className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm ${task.active ? '' : 'bg-surface-muted/60 text-ink-muted'}`}>
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-medium">{task.description}</span>
+                      <span className="text-xs text-ink-muted">{daysOf(task.weekdays)}{task.scheduled_time ? ` from ${task.scheduled_time.slice(0, 5)}` : ''}{task.deadline_time ? `, due by ${task.deadline_time.slice(0, 5)}` : ''}</span>
+                    </span>
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {task.requires_verification && <Badge tone="warn">Verify</Badge>}
+                      {task.requires_photo && <Badge>Photo</Badge>}
+                      {task.requires_reading && <Badge>Reading</Badge>}
+                      {!task.active && <Badge>Inactive</Badge>}
+                      <Button size="sm" variant="outline" onClick={() => setEditing({ templateId: t.id, frequency: t.frequency, task })}><Pencil className="h-3.5 w-3.5" /> Edit</Button>
+                      <Button size="sm" variant="outline" onClick={() => setTaskActive(task)}><Power className="h-3.5 w-3.5" /> {task.active ? 'Make inactive' : 'Make active'}</Button>
+                      <Button size="sm" variant="outline" className={DANGER} onClick={() => setRemovingTask(task)}><Trash2 className="h-3.5 w-3.5" /> Delete</Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button size="sm" variant="outline" onClick={() => setEditing({ templateId: t.id, frequency: t.frequency, task: null })}><Plus className="h-3.5 w-3.5" /> Add task</Button>
           </CardContent>
         </Card>
       ))}
+
       {editing && <ChecklistTaskModal templateId={editing.templateId} templateFrequency={editing.frequency} task={editing.task} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload() }} />}
-      <ConfirmDialog open={removing !== null} title="Deactivate task" message={`"${removing?.description}" will stop being generated. Past records are kept.`}
-        confirmLabel="Deactivate" onConfirm={removeTask} onCancel={() => setRemoving(null)} />
+
+      <Modal
+        open={template !== null}
+        size="md"
+        title={template?.id ? 'Edit checklist' : 'Add checklist'}
+        description="A named set of tasks that repeats on its own schedule."
+        onClose={() => setTemplate(null)}
+        footer={<>
+          <Button type="button" variant="outline" onClick={() => setTemplate(null)}>Cancel</Button>
+          <Button type="submit" form="template-form">Save checklist</Button>
+        </>}
+      >
+        {template && (
+          <form id="template-form" onSubmit={saveTemplate} className="space-y-5">
+            <Field label="Name"><Input required minLength={2} maxLength={120} value={template.name} onChange={(e) => setTemplate({ ...template, name: e.target.value })} /></Field>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="Category">
+                <Select value={template.category} onChange={(e) => setTemplate({ ...template, category: e.target.value })}>
+                  {[...new Set([...categories, template.category])].map((c) => <option key={c} value={c}>{c}</option>)}
+                </Select>
+              </Field>
+              <Field label="Frequency">
+                <Select value={template.frequency} onChange={(e) => setTemplate({ ...template, frequency: e.target.value })}>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="per_shift">Once per shift</option>
+                  <option value="custom">Custom</option>
+                </Select>
+              </Field>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <ConfirmDialog open={removingTask !== null} title="Delete task" confirmLabel="Delete task"
+        message={`Delete "${removingTask?.description}"? A task that has records cannot be deleted; make it inactive instead and past records are kept.`}
+        onConfirm={removeTask} onCancel={() => setRemovingTask(null)} />
+      <ConfirmDialog open={removingTemplate !== null} title="Delete checklist" confirmLabel="Delete checklist"
+        message={`Delete ${removingTemplate?.name ?? 'this checklist'} and its tasks? This cannot be undone. A checklist that has records cannot be deleted; make it inactive instead.`}
+        onConfirm={removeTemplate} onCancel={() => setRemovingTemplate(null)} />
     </div>
   )
 }

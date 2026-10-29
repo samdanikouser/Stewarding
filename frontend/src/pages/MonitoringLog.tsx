@@ -26,6 +26,7 @@ interface Reading {
   value_type: string
   parameter: string
   reference: string | null
+  lots?: { id: number; code: string; item: string; pack: string | null }[]
   min_limit: number | null
   max_limit: number | null
   passed: boolean
@@ -41,6 +42,9 @@ interface Reading {
 }
 
 const SIZE = 15
+
+/** What a check was about: the food and portion name with the lot code when lots were linked, else the typed reference. */
+const referenceOf = (r: Reading) => (r.lots && r.lots.length > 0 ? r.lots.map((l) => `${l.item}${l.pack ? ` - ${l.pack}` : ''} (${l.code})`).join(', ') : r.reference)
 
 interface LogProps {
   locationId: number | null
@@ -90,8 +94,22 @@ export function MonitoringLog({ locationId, equipment, refreshKey }: LogProps) {
     if (await run(() => api(`/monitoring/readings/${id}/review`, { method: 'POST' }), 'Check reviewed')) reload()
   }
 
+  const approvalOf = (r: Reading) => (
+    r.reviewed_at ? <Badge tone="ok">Approved by {r.reviewed_by_name}</Badge>
+      : r.rejected_at ? <span><Badge tone="critical">Rejected by {r.rejected_by_name}</Badge><span className="mt-1 block text-xs text-ink-muted">{r.reject_reason}</span></span>
+      : canReview && r.recorded_by !== me?.id ? (
+        <span className="flex gap-1">
+          <Button size="sm" variant="outline" onClick={() => review(r.id)}>Approve</Button>
+          <Button size="sm" variant="ghost" className="text-danger" onClick={() => setRejecting([r.id])}>Reject</Button>
+        </span>
+      ) : <Badge title={r.recorded_by === me?.id ? 'You recorded this, so someone else approves it' : 'Waiting for a supervisor or manager'}>Awaiting approval</Badge>
+  )
+
+  const limitsOf = (r: Reading) => (r.value_type === 'yes_no' ? 'Must be Yes' : r.value_type === 'number' ? `${r.min_limit ?? '-'} to ${r.max_limit ?? '-'}` : '-')
+  const valueOf = (r: Reading) => (r.value_type === 'signature' || r.value_type === 'image' ? <AuthImage name={r.display} alt={r.value_type === 'signature' ? 'Signature' : 'Image'} /> : r.display)
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="filter-bar">
         <Select aria-label="Monitoring point" className="w-auto" value={equipmentId} onChange={(e) => { setEquipmentId(e.target.value); setPage(1) }}>
           <option value="">All monitoring points</option>
@@ -113,6 +131,33 @@ export function MonitoringLog({ locationId, equipment, refreshKey }: LogProps) {
           <Button size="sm" variant="outline" disabled={selected.length === 0} onClick={() => setRejecting(selected)}>Reject selected</Button>
         </div>
       )}
+      <ul className="space-y-3 xl:hidden">
+        {loading && !data ? <li className="h-24 animate-pulse rounded-xl bg-surface-muted" /> : data?.items.map((r) => (
+          <li key={r.id} className={`space-y-3 rounded-xl border border-border p-4 ${r.passed ? 'bg-surface' : 'border-danger/30 bg-danger-soft/40'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{names.get(r.equipment_id)}</p>
+                <p className="text-sm text-ink-muted">{label(r.stage)}{r.retest_of_id && <Badge className="ml-1">Retest</Badge>} - {fmtDateTime(r.recorded_at, timezone)}</p>
+              </div>
+              <span className="flex shrink-0 items-center gap-2">
+                {canReview && !r.reviewed_at && !r.rejected_at && r.recorded_by !== me?.id && <input type="checkbox" className="h-5 w-5" aria-label={`Select reading ${r.id}`} checked={selected.includes(r.id)} onChange={() => toggle(r.id)} />}
+                <Badge tone={r.passed ? 'ok' : 'critical'}>{r.passed ? 'Pass' : 'Fail'}</Badge>
+              </span>
+            </div>
+            <dl className="grid grid-cols-2 gap-3 text-sm">
+              <div><dt className="text-xs text-ink-muted">Value</dt><dd className="font-medium">{valueOf(r)}</dd></div>
+              <div><dt className="text-xs text-ink-muted">Limits</dt><dd>{limitsOf(r)}</dd></div>
+              {r.reference && <div><dt className="text-xs text-ink-muted">Reference</dt><dd>{referenceOf(r)}</dd></div>}
+              <div><dt className="text-xs text-ink-muted">Recorded by</dt><dd>{r.recorded_by_name}</dd></div>
+            </dl>
+            <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              {r.corrective_action && <StatusBadge status={r.corrective_action.status} />}
+              {approvalOf(r)}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="hidden xl:block">
       <Table>
         <thead>
           <tr>{canReview && <Th />}<Th>Time</Th><Th>Monitoring point</Th><Th>Check</Th><Th>Value</Th><Th>Reference</Th><Th>Limits</Th><Th>Result</Th><Th>By</Th><Th>Approval</Th></tr>
@@ -127,7 +172,7 @@ export function MonitoringLog({ locationId, equipment, refreshKey }: LogProps) {
               <Td className="font-medium">{names.get(r.equipment_id)}</Td>
               <Td>{label(r.stage)}{r.retest_of_id && <Badge className="ml-1">Retest</Badge>}</Td>
               <Td>{r.value_type === 'signature' || r.value_type === 'image' ? <AuthImage name={r.display} alt={r.value_type === 'signature' ? 'Signature' : 'Image'} /> : r.display}</Td>
-              <Td>{r.reference ?? '-'}</Td>
+              <Td>{referenceOf(r) ?? '-'}</Td>
               <Td>{r.value_type === 'yes_no' ? 'Must be Yes' : r.value_type === 'number' ? `${r.min_limit ?? '-'} to ${r.max_limit ?? '-'}` : '-'}</Td>
               <Td>
                 <Badge tone={r.passed ? 'ok' : 'critical'}>{r.passed ? 'Pass' : 'Fail'}</Badge>
@@ -148,14 +193,20 @@ export function MonitoringLog({ locationId, equipment, refreshKey }: LogProps) {
           ))}
         </tbody>
       </Table>
+      </div>
       {data?.items.length === 0 && <EmptyState title="No checks recorded for this selection" />}
-      <Modal open={rejecting !== null} title={`Reject ${rejecting?.length ?? 0} reading${rejecting?.length === 1 ? '' : 's'}`} onClose={() => setRejecting(null)}>
-        <p className="mb-3 text-sm text-ink-muted">The person who recorded it is told to record the check again, and the check shows as due until they do.</p>
-        <Field label="Reason"><Input value={reason} maxLength={300} onChange={(e) => setReason(e.target.value)} /></Field>
-        <div className="mt-4 flex justify-end gap-2">
+      <Modal
+        open={rejecting !== null}
+        size="md"
+        title={`Reject ${rejecting?.length ?? 0} reading${rejecting?.length === 1 ? '' : 's'}`}
+        description="The person who recorded it is told to record the check again, and the check shows as due until they do."
+        onClose={() => setRejecting(null)}
+        footer={<>
           <Button variant="outline" onClick={() => setRejecting(null)}>Cancel</Button>
           <Button variant="danger" disabled={reason.trim().length < 5} onClick={reject}>Reject</Button>
-        </div>
+        </>}
+      >
+        <Field label="Reason"><Input value={reason} maxLength={300} onChange={(e) => setReason(e.target.value)} /></Field>
       </Modal>
       {data && <Pagination page={page} size={SIZE} total={data.total} onPage={setPage} />}
     </div>

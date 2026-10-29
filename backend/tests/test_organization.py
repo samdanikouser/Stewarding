@@ -109,3 +109,14 @@ def test_reports_state_generated_time_in_the_organization_zone(client, login, db
     client.put(URL, json={**BODY, "timezone": "Asia/Dubai"}, headers=h)
     again = client.get("/api/reports/records/attendance?date_from=2026-03-02&date_to=2026-03-02", headers=h).json()
     assert again["generated_at"] == "02 Mar 2026 06:05 (Asia/Dubai)"
+
+
+def test_the_currency_is_saved_in_capitals_and_shown_on_report_headers(client, login):
+    m = login(MGR)
+    assert client.get(URL, headers=m).json()["currency"] == ""
+    assert client.put(URL, json={**BODY, "currency": " kwd "}, headers=m).json()["currency"] == "KWD"
+    assert client.put(URL, json={**BODY, "currency": "K W D 1"}, headers=m).status_code == 422
+    assert client.put(URL, json={**BODY, "currency": ""}, headers=m).json()["currency"] == ""
+    from app.services.exporters import _org_lines
+    assert "Amounts in KWD" in _org_lines({"name": "Example", "currency": "KWD"})
+    assert not any(line.startswith("Amounts in") for line in _org_lines({"name": "Example", "currency": ""}))

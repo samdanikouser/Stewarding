@@ -14,7 +14,8 @@ ALL_PERMISSIONS = [
     "inventory.module", "inventory.view", "inventory.count", "inventory.manage",
     "stock.transfer", "stock.approve",
     "breakage.view", "breakage.report", "breakage.review", "breakage.approve",
-    "notification.view",
+    "lot.view", "lot.receive", "lot.split", "lot.manage",
+    "notification.view", "training.view",
     "report.view", "report.export",
     "settings.manage",
     "audit.view",
@@ -26,12 +27,13 @@ SUPERVISOR_PERMISSIONS = [
     "temp.view", "temp.record", "temp.review", "equipment.view",
     "inventory.module", "inventory.view", "inventory.count", "stock.transfer",
     "breakage.view", "breakage.report", "breakage.review",
-    "notification.view", "report.view",
+    "lot.view", "lot.receive",
+    "notification.view", "training.view", "report.view",
 ]
 
 STEWARD_PERMISSIONS = [
     "dashboard.view", "attendance.self", "checklist.view", "checklist.complete",
-    "temp.view", "temp.record", "inventory.view", "breakage.report", "notification.view",
+    "temp.view", "temp.record", "inventory.view", "breakage.report", "notification.view", "training.view",
 ]
 
 ROLE_PERMISSIONS = {
@@ -60,6 +62,9 @@ PERMISSION_CATALOG = [
                    ("stock.transfer", "Post stock and request transfers"), ("stock.approve", "Approve transfers")]),
     ("Breakage", [("breakage.view", "View breakage"), ("breakage.report", "Report breakage"),
                   ("breakage.review", "Review breakage"), ("breakage.approve", "Approve high-value breakage")]),
+    ("Food traceability", [("lot.view", "View lots and traces"), ("lot.receive", "Receive food and create lots"),
+                           ("lot.split", "Split lots into portions (butcher)"), ("lot.manage", "Hold, discard and set shelf-life rules")]),
+    ("Training", [("training.view", "Take the training assigned to them")]),
     ("Reports and admin", [("notification.view", "See tasks and notifications"), ("report.view", "View reports"),
                            ("report.export", "Export reports"), ("settings.manage", "Manage settings and roles"),
                            ("audit.view", "View audit logs")]),
@@ -69,6 +74,8 @@ PERMISSION_CATALOG = [
 MODULES = [
     ("dashboard", "Dashboard", "dashboard.view"),
     ("employees", "Employees", "employee.view"),
+    ("check-in", "Check in & out", "attendance.self"),
+    ("my-schedule", "My Schedule", "attendance.self"),
     ("attendance", "Attendance", "attendance.self"),
     ("roster", "Shift & Duty Roster", "roster.view"),
     ("checklists", "Checklists", "checklist.view"),
@@ -77,6 +84,8 @@ MODULES = [
     ("inventory", "Inventory", "inventory.module"),
     ("stock-movements", "Stock Movements & Transfers", "stock.transfer"),
     ("breakage", "Breakage & Damage Logs", "breakage.report"),
+    ("traceability", "Food Traceability", "lot.view"),
+    ("training", "Training", "training.view"),
     ("tasks", "Tasks & Notifications", "notification.view"),
     ("reports", "Reports & Analytics", "report.view"),
     ("settings", "Settings", "settings.manage"),

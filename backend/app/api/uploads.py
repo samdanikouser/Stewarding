@@ -15,7 +15,7 @@ MAX_BYTES = 5 * 1024 * 1024
 NAME_RE = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp|pdf)$")
 
 
-def _kind(head: bytes) -> str | None:
+def file_kind(head: bytes) -> str | None:
     if head.startswith(b"\xff\xd8\xff"):
         return "jpg"
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -40,7 +40,7 @@ async def upload(file: UploadFile, user: User = Depends(current_user)):
     data = await file.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "File exceeds 5 MB")
-    kind = _kind(data[:16])
+    kind = file_kind(data[:16])
     if not kind:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Only JPEG, PNG, WebP or PDF files are accepted")
     name = f"{uuid.uuid4().hex}.{kind}"

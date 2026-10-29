@@ -10,13 +10,15 @@ from .. import timeutil
 from ..audit import audit
 from ..db import get_db
 from ..deps import check_location, require, scoped_locations
-from ..models import (ApprovalRecord, CorrectiveAction, Employee, Equipment, EquipmentSchedule, Notification, TemperatureReading,
-                      User)
+from ..models import (ApprovalRecord, CorrectiveAction, Employee, Equipment, EquipmentSchedule, FoodItem, Location, Lot, Notification, ReadingLot,
+                      TemperatureReading, User)
 from ..pagination import paginate, row
 from ..permissions import MANAGER, SUPERVISOR
 from ..services.notify import notify, recipients
+from ..services.scan import require_scan
 from ..services.settings import get_setting
-from ..services.monitoring import (CLOSED_ACTIONS, already_recorded, describe, due_checks, failure_count, judge, pending_entries,
+from ..services.traceability import usable
+from ..services.monitoring import (CLOSED_ACTIONS, already_recorded, closed_until, describe, due_checks, failure_count, judge, pending_entries,
                                   resolve_alerts, resolve_chain)
 from .equipment import serialize as serialize_equipment
 from .uploads import is_valid_evidence
@@ -36,6 +38,7 @@ class ReadingIn(BaseModel):
     value: Decimal | None = Field(default=None, ge=-100000, le=100000)
     answer: str | None = Field(default=None, max_length=500)
     reference: str | None = Field(default=None, max_length=120)
+    lot_ids: list[int] = Field(default_factory=list, max_length=20)
     comment: str | None = Field(default=None, max_length=1000)
     evidence_path: str | None = None
     corrective_action: str | None = Field(default=None, max_length=1000)
@@ -52,6 +55,7 @@ class BatchItem(BaseModel):
     value: Decimal | None = Field(default=None, ge=-100000, le=100000)
     answer: str | None = Field(default=None, max_length=500)
     reference: str | None = Field(default=None, max_length=120)
+    lot_ids: list[int] = Field(default_factory=list, max_length=20)
     comment: str | None = Field(default=None, max_length=1000)
     evidence_path: str | None = None
     corrective_action: str | None = Field(default=None, max_length=1000)
@@ -104,14 +108,26 @@ def _latest_actions(db: Session, reading_ids: list[int]) -> dict[int, Corrective
     return {action.reading_id: action for action in rows}
 
 
+def _lots_of(db: Session, reading_ids: list[int]) -> dict[int, list[dict]]:
+    out: dict[int, list[dict]] = {i: [] for i in reading_ids}
+    if reading_ids:
+        for reading_id, lot_id, code, item, pack in db.execute(
+                select(ReadingLot.reading_id, Lot.id, Lot.code, FoodItem.name, Lot.pack_description).join(Lot, Lot.id == ReadingLot.lot_id)
+                .join(FoodItem, FoodItem.id == Lot.food_item_id).where(ReadingLot.reading_id.in_(reading_ids)).order_by(Lot.id)):
+            out[reading_id].append({"id": lot_id, "code": code, "item": item, "pack": pack})
+    return out
+
+
 def _serialize_readings(db: Session, readings: list[TemperatureReading], names: dict[int, str]) -> list[dict]:
     actions = _latest_actions(db, [r.id for r in readings])
-    return [_serialize_reading(db, r, names, actions) for r in readings]
+    lots = _lots_of(db, [r.id for r in readings])
+    return [_serialize_reading(db, r, names, actions, lots[r.id]) for r in readings]
 
 
 def _serialize_reading(db: Session, reading: TemperatureReading, names: dict[int, str],
-                       actions: dict[int, CorrectiveAction] | None = None) -> dict:
+                       actions: dict[int, CorrectiveAction] | None = None, lots: list[dict] | None = None) -> dict:
     out = row(reading, *READING_FIELDS)
+    out["lots"] = lots if lots is not None else _lots_of(db, [reading.id])[reading.id]
     out["recorded_by_name"] = names.get(reading.recorded_by)
     out["reviewed_by_name"] = names.get(reading.reviewed_by)
     out["rejected_by_name"] = names.get(reading.rejected_by)
@@ -156,15 +172,42 @@ def _entry_started(db: Session, eq: Equipment, sched: EquipmentSchedule, start_r
     return start
 
 
+def _lots_used(db: Session, user: User, sched: EquipmentSchedule, body: ReadingIn, start: TemperatureReading | None) -> list[Lot]:
+    """The food lots a check names: chosen on the form, or carried over from the time-in entry it closes."""
+    if start is not None and not body.lot_ids:
+        return list(db.scalars(select(Lot).join(ReadingLot, ReadingLot.lot_id == Lot.id).where(ReadingLot.reading_id == start.id).order_by(Lot.id)))
+    if not body.lot_ids and body.retest_of_id is not None:
+        return list(db.scalars(select(Lot).join(ReadingLot, ReadingLot.lot_id == Lot.id).where(ReadingLot.reading_id == body.retest_of_id).order_by(Lot.id)))
+    if not body.lot_ids:
+        if sched.trace_lots:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{sched.stage}: choose the food lot or lots this check is about")
+        return []
+    found = {lot.id: lot for lot in db.scalars(select(Lot).where(Lot.id.in_(set(body.lot_ids))))}
+    missing = set(body.lot_ids) - set(found)
+    if missing:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown food lot")
+    now = timeutil.utc_now()
+    for lot in found.values():
+        check_location(user, db, lot.location_id)
+        reason = usable(lot, now)
+        if reason:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"{sched.stage}: {reason}")
+    return [found[i] for i in dict.fromkeys(body.lot_ids)]
+
+
 def _record(db: Session, user: User, body: ReadingIn) -> TemperatureReading:
     eq = _equipment_for(db, user, body.equipment_id)
     if not eq.active:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This monitoring point is inactive")
+    require_scan(db, user, "equipment", eq.id, "scan.monitoring_required", eq.name)
     sched = db.get(EquipmentSchedule, body.schedule_id)
     if not sched or sched.equipment_id != eq.id or not sched.active:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown check for this monitoring point")
     if sched.value_type in ("signature", "image") and not is_valid_evidence(body.answer):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{sched.stage}: add the {sched.value_type}")
+    opens = closed_until(db, eq, sched, timeutil.utc_now()) if body.retest_of_id is None else None
+    if opens:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"{sched.stage} opens at {timeutil.to_local(opens, db.get(Location, eq.location_id).timezone):%H:%M}")
     if body.retest_of_id is None and already_recorded(db, eq, sched, timeutil.utc_now()):
         raise HTTPException(status.HTTP_409_CONFLICT, f"{sched.stage} is already recorded for this time")
     if sched.value_type == "number" and sched.min_value is None and sched.max_value is None:
@@ -174,7 +217,8 @@ def _record(db: Session, user: User, body: ReadingIn) -> TemperatureReading:
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{sched.stage}: {exc}") from None
     start = _entry_started(db, eq, sched, body.start_reading_id)
-    reference = start.reference if start else (body.reference or "").strip() or None
+    lots = _lots_used(db, user, sched, body, start)
+    reference = ", ".join(lot.code for lot in lots)[:120] if lots else (start.reference if start else (body.reference or "").strip() or None)
     if sched.require_reference and reference is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter the batch, lot or product reference for this check")
     if body.evidence_path and not is_valid_evidence(body.evidence_path):
@@ -202,6 +246,7 @@ def _record(db: Session, user: User, body: ReadingIn) -> TemperatureReading:
         start_reading_id=start.id if start else None)
     db.add(reading)
     db.flush()
+    db.add_all(ReadingLot(reading_id=reading.id, lot_id=lot.id) for lot in lots)
 
     if original_action and passed:
         resolve_chain(db, reading, now)
@@ -220,16 +265,17 @@ def record_reading(body: ReadingIn, user: User = Depends(require("temp.record"))
 
 
 def _require_whole_cycle(db: Session, user: User, body: "BatchIn") -> None:
-    """Every required question of the form being filled in must be answered; optional ones may be left out."""
+    """Every required question of the form being filled in must be answered or already recorded for this time; optional ones may be left out."""
     eq = _equipment_for(db, user, body.equipment_id)
     sent = {r.schedule_id for r in body.readings}
     active = list(db.scalars(select(EquipmentSchedule).where(EquipmentSchedule.equipment_id == eq.id, EquipmentSchedule.active.is_(True))))
+    now = timeutil.utc_now()
 
     def when(s: EquipmentSchedule) -> tuple:
         return (s.timing, s.time_of_day, s.interval_minutes, s.weekdays, s.day_of_month, s.phase)
 
     groups = {when(s) for s in active if s.id in sent}
-    missing = [s.stage for s in active if when(s) in groups and s.required and s.id not in sent]
+    missing = [s.stage for s in active if when(s) in groups and s.required and s.id not in sent and not already_recorded(db, eq, s, now)]
     if missing:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Answer the required questions: {', '.join(missing)}")
 
@@ -263,7 +309,7 @@ def _open_failure(db: Session, user: User, eq: Equipment, reading: TemperatureRe
         notify(db, recipients(db, eq.location_id, MANAGER, SUPERVISOR), "equipment_maintenance",
                f"Repeated failures: {eq.name} needs review",
                key=f"maint:{eq.id}:{now.date().isoformat()}", priority="high", location_id=eq.location_id,
-               link="/equipment", requires_ack=True)
+               link="/settings/monitoring", requires_ack=True)
 
 
 @router.get("/readings")

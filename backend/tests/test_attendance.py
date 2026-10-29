@@ -78,6 +78,22 @@ def test_check_in_and_out_are_limited_to_the_geofence(client, login, db, clock):
     assert client.post(out, json={"latitude": 29.3760, "longitude": 47.9775, "exception_reason": "Tasks done elsewhere"}, headers=h).status_code == 200
 
 
+def test_without_attendance_by_location_the_position_picks_the_place(client, login, db, clock):
+    fence(db)
+    assert client.put("/api/settings", json={"values": {"attendance.by_location": 0}}, headers=login(MGR)).status_code == 200
+    h = login(STEWARD)
+    assert client.get("/api/auth/me", headers=h).json()["by_location"] is False
+    url = "/api/attendance/check-in"
+    assert client.post(url, json={}, headers=h).status_code == 400                                    # position still needed
+    assert client.post(url, json={"latitude": 29.3859, "longitude": 47.9774}, headers=h).status_code == 403   # 1.1 km away
+    ok = client.post(url, json={"latitude": 29.3760, "longitude": 47.9775}, headers=h)
+    assert ok.status_code == 201 and ok.json()["location_id"] == loc_id(db, "MK")
+
+
+def test_choosing_a_location_is_still_required_when_attendance_is_by_location(client, login, db, clock):
+    assert client.post("/api/attendance/check-in", json={}, headers=login(STEWARD)).status_code == 422
+
+
 def test_a_location_without_a_geofence_needs_no_position(client, login, db, clock):
     assert check_in(client, login(STEWARD), db).status_code == 201
 
@@ -228,3 +244,81 @@ def test_flags_show_in_the_attendance_listing_and_record(client, login, db, cloc
     doc = client.get("/api/reports/records/attendance?date_from=2026-03-02&date_to=2026-03-02", headers=m).json()
     sid = next(r for g in doc["groups"] for r in g["rows"] if r["employee"] == "Sid Steward")
     assert sid["location_check"] == "No accuracy reported"
+
+
+def test_my_schedule_lists_each_day_of_the_month_with_shifts_week_offs_and_leave(client, login, db, clock):
+    h = login(STEWARD)
+    month = client.get("/api/attendance/me/schedule?month=2026-03", headers=h).json()
+    assert month["month"] == "2026-03" and len(month["days"]) == 31
+    monday = next(d for d in month["days"] if d["date"] == "2026-03-02")
+    assert [s["name"] for s in monday["shifts"]] and monday["shifts"][0]["location"] and not monday["shifts"][0]["week_off"]
+    assert client.get("/api/attendance/me/schedule?month=nonsense", headers=h).status_code == 422
+    assert len(client.get("/api/attendance/me/schedule", headers=h).json()["days"]) >= 28        # this month by default
+
+
+def test_my_schedule_marks_what_happened_on_past_days(client, login, db, clock):
+    h = login(STEWARD)
+    assert check_in(client, h, db).status_code == 201                                  # Monday 2 March, on time
+    clock.set(2026, 3, 9, 7, 0)                                                         # a week later
+    month = {d["date"]: d for d in client.get("/api/attendance/me/schedule?month=2026-03", headers=h).json()["days"]}
+    assert month["2026-03-02"]["outcome"] == "on_duty" and month["2026-03-02"]["worked"][0]["check_in_at"]
+    assert month["2026-03-09"]["outcome"] is None                                       # today, nothing punched yet
+    unpunched = [d for d in month.values() if d["date"] < "2026-03-09" and not d["worked"] and any(not s["week_off"] for s in d["shifts"])]
+    assert unpunched and all(d["outcome"] == "missed" for d in unpunched)                # rostered, no punch, no leave
+
+
+def test_leave_and_missed_attendance_can_be_recorded_without_choosing_a_location(client, login, db, clock):
+    m = login(MGR)
+    emp = next(e for e in client.get("/api/employees?size=100", headers=m).json()["items"] if e["email"] == "steward.mk@example.test")
+    off = client.post("/api/absences", json={"employee_id": emp["id"], "day": "2026-03-04", "absence_type": "day_off"}, headers=m)
+    assert off.status_code == 201, off.text
+    assert off.json()["location_id"] == emp["location_ids"][0]                                  # the place they work at
+    manual = client.post("/api/attendance/manual", json={"employee_id": emp["id"], "day": "2026-03-01", "check_in_time": "06:00:00",
+                                                         "check_out_time": "14:00:00", "reason": "Forgot to check in"}, headers=m)
+    assert manual.status_code == 201, manual.text
+    assert manual.json()["location_id"] == emp["location_ids"][0]
+    # an employee tied to no location works anywhere, so leave can be marked for them too
+    free = client.post("/api/employees", json={"full_name": "Free Roamer", "job_title": "Cook", "email": "free@example.com", "password": "a-long-test-password",
+                                               "role": "steward", "location_ids": []}, headers=m).json()
+    assert client.post("/api/absences", json={"employee_id": free["id"], "day": "2026-03-04", "absence_type": "sick_leave"}, headers=m).status_code == 201
+    # naming a location the employee does not work at is still refused
+    other = next(i for i in range(1, 10) if i not in emp["location_ids"])
+    assert client.post("/api/absences", json={"employee_id": emp["id"], "location_id": other, "day": "2026-03-05", "absence_type": "day_off"}, headers=m).status_code == 400
+
+
+def night_roster(db, code="MK"):
+    from datetime import date, time
+    from app.models import Employee, Shift, ShiftAssignment
+    emp = db.scalar(select(Employee).where(Employee.email == "steward.mk@example.test"))
+    for a in db.scalars(select(ShiftAssignment).where(ShiftAssignment.employee_id == emp.id)):
+        db.delete(a)
+    night = Shift(name="Night", start_time=time(17, 0), end_time=time(5, 0), kind="work", grace_minutes=10)
+    db.add(night)
+    db.flush()
+    for weekday in range(7):
+        db.add(ShiftAssignment(employee_id=emp.id, shift_id=night.id, location_id=loc_id(db, code), weekday=weekday, valid_from=date(2026, 1, 1)))
+    db.commit()
+    return emp, night
+
+
+def test_a_night_shift_worker_arriving_after_midnight_is_late_for_last_nights_shift_not_early_for_tonights(client, login, db, clock):
+    from app.services import metrics
+    emp, night = night_roster(db)
+    clock.set(2026, 3, 2, 20, 30)                                         # 00:30 on Tuesday 3 March in Dubai
+    status_now = client.get("/api/attendance/me/status", headers=login(STEWARD)).json()
+    assert [r["shift"] for r in status_now["rostered_today"]] == ["Night"]                              # shown once, as the shift they are on
+    r = client.post("/api/attendance/check-in", json={"location_id": loc_id(db, "MK")}, headers=login(STEWARD))
+    assert r.status_code == 201
+    assert r.json()["local_date"] == "2026-03-02" and r.json()["late_minutes"] == 450 and r.json()["shift_id"] == night.id   # Monday's shift, 7.5 h late
+    clock.set(2026, 3, 3, 2, 0)
+    days = {}
+    for win in metrics.windows(db, clock.now, None, loc_id(db, "MK"), datetime(2026, 3, 2).date(), datetime(2026, 3, 3).date()):
+        days.update({row["day"].isoformat(): row["status"] for row in metrics.attendance_stats(db, win, clock.now, emp.id)["rows"]})
+    assert days["2026-03-02"] != "absent"                                                                # Monday is not a false absence
+
+
+def test_check_in_before_the_evening_start_still_belongs_to_that_evenings_shift(client, login, db, clock):
+    night_roster(db)
+    clock.set(2026, 3, 3, 12, 0)                                           # 16:00 Dubai on Tuesday, an hour before the shift
+    r = client.post("/api/attendance/check-in", json={"location_id": loc_id(db, "MK")}, headers=login(STEWARD))
+    assert r.json()["local_date"] == "2026-03-03" and r.json()["late_minutes"] == 0

@@ -15,6 +15,9 @@ import { InventoryOverview } from '@/pages/InventoryOverview'
 import { ItemForm } from '@/pages/ItemForm'
 import { MinimumCell } from '@/pages/MinimumCell'
 import { StockPostModal } from '@/pages/StockPostModal'
+import { useMoney } from '@/lib/money'
+import { PriceTrend } from '@/pages/PriceTrend'
+import { ItemHistory } from '@/pages/ItemHistory'
 
 interface Listing {
   total: number
@@ -25,6 +28,7 @@ interface Listing {
 const SIZE = 15
 
 export function InventoryPage() {
+  const money = useMoney()
   const { me } = useAuth()
   const can = (p: string) => me?.permissions.includes(p) ?? false
   const [locationId, setLocationId] = useState<number | null>(null)
@@ -35,6 +39,8 @@ export function InventoryPage() {
   const [formItem, setFormItem] = useState<Item | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [posting, setPosting] = useState<Item | null>(null)
+  const [trend, setTrend] = useState<Item | null>(null)
+  const [history, setHistory] = useState<Item | null>(null)
   const [version, setVersion] = useState(0)
   const categories = useApi<{ id: number; name: string }[]>('/inventory/categories')
 
@@ -66,7 +72,7 @@ export function InventoryPage() {
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={lowOnly} onChange={(e) => { setLowOnly(e.target.checked); setPage(1) }} /> Low stock only
         </label>
-        {data?.total_value !== undefined && <Badge>Stock value {data.total_value.toFixed(2)}</Badge>}
+        {data?.total_value !== undefined && <Badge>Stock value {money(data.total_value)}</Badge>}
       </div>
 
       <Table>
@@ -82,23 +88,29 @@ export function InventoryPage() {
               <Td>{i.unit}</Td>
               <Td className="text-right tabular-nums">{i.qty}</Td>
               <Td><MinimumCell item={i} locationId={locationId} canEdit={can('inventory.count')} onSaved={refresh} /></Td>
-              {showCost && <Td className="text-right tabular-nums">{i.value != null ? i.value.toFixed(2) : '-'}</Td>}
+              {showCost && <Td className="text-right tabular-nums">{i.value != null ? money(i.value) : '-'}</Td>}
               <Td>{i.low ? <Badge tone="critical">Low stock</Badge> : <Badge tone="ok">OK</Badge>}</Td>
-              <Td className="space-x-2 text-right">
+              <Td>
+                <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                <Button size="sm" variant="outline" onClick={() => setHistory(i)}>History</Button>
+                {showCost && <Button size="sm" variant="outline" onClick={() => setTrend(i)}>Price trend</Button>}
                 {can('stock.transfer') && <Button size="sm" variant="outline" onClick={() => setPosting(i)}>Stock</Button>}
                 {can('inventory.manage') && <Button size="sm" variant="outline" onClick={() => { setFormItem(i); setFormOpen(true) }}>Edit</Button>}
+                </div>
               </Td>
             </tr>
           ))}
         </tbody>
       </Table>
-      {data?.items.length === 0 && <EmptyState title="No items found" hint="Try clearing the search or the low-stock filter." />}
+      {data?.items.length === 0 && <EmptyState title="No items found" />}
       {data && <Pagination page={page} size={SIZE} total={data.total} onPage={setPage} />}
 
       <h2 className="pt-2 text-lg font-semibold">Tracked assets</h2>
       <AssetsPanel locationId={locationId} items={data?.items ?? []} />
 
       {formOpen && <ItemForm item={formItem} open onClose={() => setFormOpen(false)} onSaved={() => { setFormOpen(false); refresh() }} />}
+      {trend && <PriceTrend item={trend} onClose={() => setTrend(null)} />}
+      {history && <ItemHistory item={history} onClose={() => setHistory(null)} />}
       <StockPostModal item={posting} defaultLocation={locationId} onClose={() => setPosting(null)} onPosted={() => { setPosting(null); refresh() }} />
     </div>
   )

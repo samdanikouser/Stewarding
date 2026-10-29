@@ -49,6 +49,8 @@ interface Dashboard {
     inventory_movement: { date: string; in: number; out: number }[]
     attendance_trend: { date: string; present: number; absent: number; late: number }[]
   }
+  sections?: string[]
+  approvals?: string[]
   supervisor?: {
     pending: { total: number; items: { category: string; location: string; urgency: string; responsible: string; description: string; overdue_minutes: number; link: string }[] }
     staff_today: { name: string; shift: string; status: string; late_minutes: number }[]
@@ -85,11 +87,12 @@ export function ManagerDashboard() {
   const { data, loading, error } = useApi<Dashboard>(
     `/dashboard${qs({ location_id: locationId, date_from: from, date_to: to, employee_id: employeeId, equipment_id: equipmentId, task_status: taskStatus })}`,
   )
-  const people = useApi<{ items: { id: number; full_name: string }[] }>('/employees?size=200&status=active')
+  const people = useApi<{ items: { id: number; full_name: string }[] }>(me?.permissions.includes('employee.view') ? '/employees?size=200&status=active' : null)
   const equipment = useApi<{ id: number; name: string }[]>(me?.permissions.includes('equipment.view') ? '/equipment' : null)
-  const isManager = me?.tier === 'manager'
 
   const k = data?.kpis
+  const show = (section: string) => data?.sections?.includes(section) ?? true
+  const approves = (kind: string) => data?.approvals?.includes(kind) ?? true
   const urgent = k && (k.failed_checks > 0 || k.overdue_tasks > 0 || k.equipment_attention > 0)
 
   return (
@@ -97,11 +100,10 @@ export function ManagerDashboard() {
       <HeroCard
         eyebrow={new Intl.DateTimeFormat('en-GB', { dateStyle: 'full' }).format(new Date())}
         title={`${greeting()}, ${(me?.employee?.name ?? '').split(' ')[0] || 'there'}`}
-        subtitle={isManager ? 'All locations, consolidated.' : 'Operations for your assigned locations.'}
         chips={k ? [
-          { label: `${k.checked_in} of ${k.scheduled_today} checked in` },
-          { label: `Daily checklists ${pct(k.daily_completion)}` },
-          { label: `${k.monitoring_checks.done} of ${k.monitoring_checks.due} checks recorded` },
+          ...(show('people') ? [{ label: `${k.checked_in} of ${k.scheduled_today} checked in` }] : []),
+          ...(show('checklists') ? [{ label: `Daily checklists ${pct(k.daily_completion)}` }] : []),
+          ...(show('monitoring') ? [{ label: `${k.monitoring_checks.done} of ${k.monitoring_checks.due} checks recorded` }] : []),
           ...(k.failed_checks > 0 ? [{ label: `${k.failed_checks} failed check(s)`, urgent: true }] : []),
           ...(k.overdue_tasks > 0 ? [{ label: `${k.overdue_tasks} overdue task(s)`, urgent: true }] : []),
         ] : []}
@@ -111,26 +113,30 @@ export function ManagerDashboard() {
         <LocationSelect allowAll value={locationId} onChange={setLocationId} />
         <Input aria-label="From date" type="date" className="w-auto" value={from} onChange={(e) => setFrom(e.target.value)} />
         <Input aria-label="To date" type="date" className="w-auto" value={to} onChange={(e) => setTo(e.target.value)} />
-        <Select aria-label="Employee" className="w-auto" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-          <option value="">All employees</option>
-          {people.data?.items.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
-        </Select>
+        {show('people') && (
+          <Select aria-label="Employee" className="w-auto" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <option value="">All employees</option>
+            {people.data?.items.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </Select>
+        )}
         {equipment.data && (
           <Select aria-label="Equipment" className="w-auto" value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
             <option value="">All equipment</option>
             {equipment.data.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </Select>
         )}
-        <Select aria-label="Task status" className="w-auto" value={taskStatus} onChange={(e) => setTaskStatus(e.target.value)}>
-          <option value="">Any task status</option>
-          {['completed', 'verified', 'pending_verification', 'overdue', 'failed', 'waived', 'upcoming'].map((s) => <option key={s} value={s}>{label(s)}</option>)}
-        </Select>
+        {show('checklists') && (
+          <Select aria-label="Task status" className="w-auto" value={taskStatus} onChange={(e) => setTaskStatus(e.target.value)}>
+            <option value="">Any task status</option>
+            {['completed', 'verified', 'pending_verification', 'overdue', 'failed', 'waived', 'upcoming'].map((s) => <option key={s} value={s}>{label(s)}</option>)}
+          </Select>
+        )}
       </div>
 
       {error && <p role="alert" className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}
 
       {urgent && k && (
-        <div role="alert" className="rounded-md border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger">
+        <div role="alert" className="rounded-xl border border-danger/20 border-l-4 border-l-danger bg-danger-soft px-4 py-3 text-sm text-danger">
           <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" aria-hidden /> Needs attention now</p>
           <ul className="mt-1 list-inside list-disc">
             {k.failed_checks > 0 && <li><Link className="underline" to="/monitoring">{k.failed_checks} failed check(s) today</Link></li>}
@@ -143,67 +149,77 @@ export function ManagerDashboard() {
       {loading && !data ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-24" />)}</div> : k && (
         <div className="space-y-5">
           {k.awaiting_approval.tasks + k.awaiting_approval.readings + k.awaiting_approval.breakage > 0 && (
-            <Link to="/tasks" className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border border-warn/50 bg-warn-soft px-4 py-3 text-sm">
+            <Link to="/tasks" className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-warn/25 border-l-4 border-l-warn bg-warn-soft px-4 py-3 text-sm">
               <span className="font-semibold">Waiting for approval</span>
-              <span>{k.awaiting_approval.tasks} checklist task(s)</span>
-              <span>{k.awaiting_approval.readings} monitoring reading(s)</span>
-              <span>{k.awaiting_approval.breakage} breakage report(s)</span>
+              {approves('tasks') && <span>{k.awaiting_approval.tasks} checklist task(s)</span>}
+              {approves('readings') && <span>{k.awaiting_approval.readings} monitoring reading(s)</span>}
+              {approves('breakage') && <span>{k.awaiting_approval.breakage} breakage report(s)</span>}
               <span className="ml-auto underline">Review</span>
             </Link>
           )}
+          {(show('people')) && (
           <KpiGroup title="People today" link="/attendance">
             <KpiCard icon={CalendarCheck} label="Scheduled" value={k.scheduled_today} />
-            <KpiCard icon={LogIn} label="Checked in" value={k.checked_in} hint={`${k.on_duty} on duty now`} tone="ok" />
-            <KpiCard icon={UserX} label="Not checked in" value={k.not_checked_in} hint={`${k.absent} absent`} tone={k.absent ? 'warn' : 'default'} />
-            <KpiCard icon={Coffee} label="Off today" value={k.off_today} hint="week off or leave" />
-          </KpiGroup>
+            <KpiCard icon={LogIn} label="Checked in" value={k.checked_in} tone="ok" />
+            <KpiCard icon={UserX} label="Not checked in" value={k.not_checked_in} tone={k.absent ? 'warn' : 'default'} />
+            <KpiCard icon={Coffee} label="Off today" value={k.off_today} />
+          </KpiGroup>)}
+          {(show('checklists')) && (
           <KpiGroup title="Checklists" link="/checklists">
-            <KpiCard icon={ClipboardCheck} label="Daily completion" value={pct(k.daily_completion)} hint={ratio(k.daily_completion)} />
-            <KpiCard icon={ClipboardList} label="Weekly completion" value={pct(k.weekly_completion)} hint={ratio(k.weekly_completion)} />
+            <KpiCard icon={ClipboardCheck} label="Daily completion" value={pct(k.daily_completion)} />
+            <KpiCard icon={ClipboardList} label="Weekly completion" value={pct(k.weekly_completion)} />
             <KpiCard icon={Clock} label="Overdue tasks" value={k.overdue_tasks} tone={k.overdue_tasks ? 'critical' : 'default'} />
-          </KpiGroup>
+          </KpiGroup>)}
+          {(show('monitoring')) && (
           <KpiGroup title="Food safety monitoring" link="/monitoring">
-            <KpiCard icon={Thermometer} label="Checks recorded" value={`${k.monitoring_checks.done} / ${k.monitoring_checks.due}`} hint="recorded / due so far today" />
+            <KpiCard icon={Thermometer} label="Checks recorded" value={`${k.monitoring_checks.done} / ${k.monitoring_checks.due}`} />
             <KpiCard icon={TriangleAlert} label="Failed checks" value={k.failed_checks} tone={k.failed_checks ? 'critical' : 'default'} />
             <KpiCard icon={Wrench} label="Points needing attention" value={k.equipment_attention} tone={k.equipment_attention ? 'warn' : 'default'} />
-          </KpiGroup>
+          </KpiGroup>)}
+          {(show('stock') || show('breakage')) && (
           <KpiGroup title="Stock and breakage" link="/stock-movements">
-            <KpiCard icon={Package} label="Stock on hand" value={k.inventory.qty} hint={`Value ${k.inventory.value.toFixed(2)}`} />
-            <KpiCard icon={PackageMinus} label="Low-stock items" value={k.low_stock_items} tone={k.low_stock_items ? 'warn' : 'default'} />
-            <KpiCard icon={HeartCrack} label="Breakage today" value={k.breakage_today} hint={`${k.breakage_month} this month`} />
-          </KpiGroup>
+            {show('stock') && <KpiCard icon={Package} label="Stock on hand" value={k.inventory.qty} />}
+            {show('stock') && <KpiCard icon={PackageMinus} label="Low-stock items" value={k.low_stock_items} tone={k.low_stock_items ? 'warn' : 'default'} />}
+            {show('breakage') && <KpiCard icon={HeartCrack} label="Breakage today" value={k.breakage_today} />}
+          </KpiGroup>)}
         </div>
       )}
 
       {data && (
         <section aria-label="Charts" className="grid gap-4 lg:grid-cols-2">
+          {show('checklists') && (
           <Card>
             <CardHeader><CardTitle>Daily task completion</CardTitle></CardHeader>
             <CardContent><TrendLine points={data.charts.task_trend.map((d) => ({ label: d.date, value: d.percent }))} /></CardContent>
-          </Card>
+          </Card>)}
+          {show('checklists') && (
           <Card>
             <CardHeader><CardTitle>Weekly compliance by location</CardTitle></CardHeader>
             <CardContent><BarList items={data.charts.weekly_compliance.map((w) => ({ label: w.location, value: w.percent, sub: ratio(w) }))} /></CardContent>
-          </Card>
+          </Card>)}
+          {show('monitoring') && (
           <Card>
             <CardHeader><CardTitle>Monitoring compliance by point</CardTitle></CardHeader>
             <CardContent>
               <BarList items={data.charts.monitoring_compliance.map((e) => ({ label: `${e.equipment} (${e.location})`, value: e.percent, sub: `${e.done} of ${e.due} checks, ${e.failed} failed` }))} />
             </CardContent>
-          </Card>
+          </Card>)}
+          {show('breakage') && (
           <Card>
             <CardHeader><CardTitle>Monthly breakage</CardTitle></CardHeader>
             <CardContent><ColumnChart data={data.charts.breakage_trend} labelKey="month" series={[{ key: 'qty', label: 'Units', className: 'bg-danger' }, { key: 'incidents', label: 'Incidents', className: 'bg-warn' }]} /></CardContent>
-          </Card>
+          </Card>)}
+          {show('stock') && (
           <Card>
             <CardHeader><CardTitle>Inventory movement</CardTitle></CardHeader>
             <CardContent><ColumnChart data={data.charts.inventory_movement} labelKey="date" series={[{ key: 'in', label: 'Received', className: 'bg-ok' }, { key: 'out', label: 'Used', className: 'bg-brand' }]} /></CardContent>
-          </Card>
+          </Card>)}
+          {show('people') && (
           <Card>
             <CardHeader><CardTitle>Attendance and absenteeism</CardTitle></CardHeader>
             <CardContent><ColumnChart data={data.charts.attendance_trend} labelKey="date" series={[{ key: 'present', label: 'Present', className: 'bg-ok' }, { key: 'absent', label: 'Absent', className: 'bg-danger' }]} /></CardContent>
-          </Card>
-        </section>
+          </Card>)}
+          </section>
       )}
 
       {data?.supervisor && (

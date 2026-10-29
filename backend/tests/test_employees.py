@@ -1,7 +1,9 @@
 import pytest
 from sqlalchemy import select
 
-from app.models import AuditLog, Location
+from app.services.scan import make_token
+
+from app.models import AuditLog, Location, User
 
 from .conftest import PASSWORD
 
@@ -29,6 +31,32 @@ def test_manager_creates_employee_who_can_sign_in(client, login, db):
     assert r.status_code == 201
     signin = client.post("/api/auth/login", json={"email": "nina@example.com", "password": "a-long-test-password"})
     assert signin.status_code == 200
+
+
+def test_an_employee_can_be_added_without_a_location_and_works_at_every_one(client, login, db):
+    r = client.post("/api/employees", json=payload(db, location_ids=[]), headers=login(MGR))
+    assert r.status_code == 201
+    assert r.json()["location_ids"] == []
+    new = db.scalar(select(User).where(User.email == "nina@example.com"))
+    new.must_change_password = False                                                           # a new account must change its password first
+    db.commit()
+    nina = {"Authorization": "Bearer " + client.post(
+        "/api/auth/login", json={"email": "nina@example.com", "password": "a-long-test-password"}).json()["access_token"]}
+    for code in ("MK", "BQ"):                                                                  # every outlet's QR works for them
+        assert client.post("/api/scan", json={"token": make_token("location", loc_id(db, code))}, headers=nina).status_code == 200
+    kept = client.put(f"/api/employees/{r.json()['id']}", json={"location_ids": [loc_id(db, "MK")]}, headers=login(MGR))
+    assert kept.json()["location_ids"] == [loc_id(db, "MK")]
+    cleared = client.put(f"/api/employees/{r.json()['id']}", json={"location_ids": []}, headers=login(MGR))   # taking every outlet off
+    assert cleared.status_code == 200 and cleared.json()["location_ids"] == []
+
+
+def test_a_shift_can_be_rostered_without_choosing_a_location(client, login, db):
+    emp = client.post("/api/employees", json=payload(db, location_ids=[loc_id(db, "MK")]), headers=login(MGR)).json()
+    shift = client.get("/api/roster/shifts", headers=login(MGR)).json()[0]["id"]
+    made = client.post("/api/roster/assignments", json={"employee_id": emp["id"], "shift_id": shift, "weekdays": [0], "valid_from": "2030-01-07"}, headers=login(MGR))
+    assert made.status_code == 201
+    listed = client.get(f"/api/roster/assignments?employee_id={emp['id']}", headers=login(MGR)).json()
+    assert [a["location_id"] for a in listed] == [loc_id(db, "MK")]
 
 
 @pytest.mark.parametrize("email", ["sup.mk@example.test", "steward.mk@example.test"])

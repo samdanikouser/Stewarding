@@ -2,15 +2,12 @@ import { Badge } from '@/components/ui/badge'
 import { label } from '@/lib/format'
 
 const OK = new Set(['completed', 'verified', 'passed', 'active', 'operational', 'approved', 'resolved', 'on_duty', 'received'])
-const WARN = new Set(['in_progress', 'pending_verification', 'requested', 'reported', 'reviewed', 'open', 'waived', 'high', 'retest_due'])
+const WARN = new Set(['in_progress', 'pending_verification', 'requested', 'pending', 'reported', 'reviewed', 'open', 'waived', 'high', 'retest_due'])
 const CRITICAL = new Set(['overdue', 'failed', 'inactive', 'rejected', 'critical', 'out_of_service', 'escalated', 'missing'])
 
 export function StatusBadge({ status }: { status: string }) {
   const tone = OK.has(status) ? 'ok' : WARN.has(status) ? 'warn' : CRITICAL.has(status) ? 'critical' : 'neutral'
   return (
-    <Badge tone={tone} className="gap-1.5">
-      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-current" />
-      {label(status)}
-    </Badge>
+    <Badge tone={tone}>{label(status)}</Badge>
   )
 }

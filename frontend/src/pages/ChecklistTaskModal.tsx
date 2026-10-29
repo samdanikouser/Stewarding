@@ -74,45 +74,70 @@ export function ChecklistTaskModal({ templateId, templateFrequency, task, onClos
     if (ok) onSaved()
   }
 
+  const needs: { key: 'requires_verification' | 'requires_photo' | 'requires_reading' | 'mandatory_for_checkout'; title: string }[] = [
+    { key: 'requires_verification', title: 'A supervisor must verify it' },
+    { key: 'requires_photo', title: 'Needs a photo' },
+    { key: 'requires_reading', title: 'Needs a reading' },
+    { key: 'mandatory_for_checkout', title: 'Must be done before check-out' },
+  ]
+
   return (
-    <Modal open title={task ? 'Edit task' : 'Add task'} onClose={onClose}>
-      <form onSubmit={save} className="space-y-3">
-        <Field label="Task"><Input required minLength={3} maxLength={300} value={form.description} onChange={(e) => set('description', e.target.value)} /></Field>
-        <Field label="Instructions (optional)"><Input value={form.instructions} onChange={(e) => set('instructions', e.target.value)} /></Field>
-        <fieldset>
-          <legend className="mb-1 text-sm font-medium">Repeats on</legend>
-          <div className="flex flex-wrap items-center gap-3">
-            {DAYS.map((name, day) => (
-              <label key={name} className="flex items-center gap-1 text-sm">
-                <input type="checkbox" checked={form.days.includes(day)} onChange={() => toggle(day)} /> {name}
+    <Modal
+      open
+      size="lg"
+      title={task ? 'Edit task' : 'Add task'}
+      description="What to do, when it repeats and what completing it needs."
+      onClose={onClose}
+      footer={<>
+        {form.days.length === 0 && <span className="mr-auto text-sm text-warn">Choose at least one day.</span>}
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" form="task-form" disabled={form.days.length === 0}>Save task</Button>
+      </>}
+    >
+      <form id="task-form" onSubmit={save} className="space-y-7">
+        <section className="space-y-4">
+          <h3 className="text-sm font-semibold">The task</h3>
+          <Field label="Task"><Input required minLength={3} maxLength={300} value={form.description} onChange={(e) => set('description', e.target.value)} /></Field>
+          <Field label="Instructions (optional)"><Input value={form.instructions} onChange={(e) => set('instructions', e.target.value)} /></Field>
+        </section>
+
+        <section className="space-y-4 border-t border-border pt-6">
+          <h3 className="text-sm font-semibold">When</h3>
+          <fieldset>
+            <legend className="mb-2 text-sm font-medium">Repeats on <span className="font-normal text-ink-muted">({summary})</span></legend>
+            <div className="flex flex-wrap gap-2">
+              {DAYS.map((name, day) => (
+                <label key={name} className={`cursor-pointer rounded-full border px-4 py-1.5 text-sm transition-colors ${form.days.includes(day) ? 'border-brand bg-brand-soft font-semibold text-brand-deep' : 'border-border hover:bg-surface-muted'}`}>
+                  <input type="checkbox" className="sr-only" checked={form.days.includes(day)} onChange={() => toggle(day)} /> {name}
+                </label>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button type="button" size="sm" variant="ghost" onClick={() => set('days', EVERY_DAY)}>Every day</Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => set('days', [0, 1, 2, 3, 4])}>Weekdays</Button>
+            </div>
+          </fieldset>
+          <div className="grid gap-5 sm:grid-cols-3">
+            <Field label="Starts at"><Input type="time" value={form.scheduled_time} onChange={(e) => set('scheduled_time', e.target.value)} /></Field>
+            <Field label="Due by"><Input type="time" value={form.deadline_time} onChange={(e) => set('deadline_time', e.target.value)} /></Field>
+            <Field label="Priority">
+              <Select value={form.priority} onChange={(e) => set('priority', e.target.value)}>
+                {['low', 'normal', 'high', 'critical'].map((p) => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+              </Select>
+            </Field>
+          </div>
+        </section>
+
+        <section className="space-y-4 border-t border-border pt-6">
+          <h3 className="text-sm font-semibold">What completing it needs</h3>
+          <div className="divide-y divide-border rounded-xl border border-border">
+            {needs.map((n) => (
+              <label key={n.key} className="flex cursor-pointer items-center gap-3 px-4 py-3 text-sm">
+                <input type="checkbox" checked={form[n.key]} onChange={(e) => set(n.key, e.target.checked)} /> {n.title}
               </label>
             ))}
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" variant="outline" onClick={() => set('days', EVERY_DAY)}>Every day</Button>
-            <Button type="button" size="sm" variant="outline" onClick={() => set('days', [0, 1, 2, 3, 4])}>Weekdays</Button>
-            <span className="text-xs text-ink-muted">{summary}. One day a week makes it a weekly task.</span>
-          </div>
-        </fieldset>
-        <div className="grid grid-cols-3 gap-3">
-          <Field label="Starts at"><Input type="time" value={form.scheduled_time} onChange={(e) => set('scheduled_time', e.target.value)} /></Field>
-          <Field label="Due by"><Input type="time" value={form.deadline_time} onChange={(e) => set('deadline_time', e.target.value)} /></Field>
-          <Field label="Priority">
-            <Select value={form.priority} onChange={(e) => set('priority', e.target.value)}>
-              {['low', 'normal', 'high', 'critical'].map((p) => <option key={p} value={p}>{p}</option>)}
-            </Select>
-          </Field>
-        </div>
-        <div className="space-y-1 text-sm">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.requires_verification} onChange={(e) => set('requires_verification', e.target.checked)} /> A supervisor must verify it</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.requires_photo} onChange={(e) => set('requires_photo', e.target.checked)} /> Needs a photo</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.requires_reading} onChange={(e) => set('requires_reading', e.target.checked)} /> Needs a reading</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.mandatory_for_checkout} onChange={(e) => set('mandatory_for_checkout', e.target.checked)} /> Must be done before check-out</label>
-        </div>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={form.days.length === 0}>Save</Button>
-        </div>
+        </section>
       </form>
     </Modal>
   )

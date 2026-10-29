@@ -6,10 +6,11 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { EmptyState, SkeletonRows, Table, Td, Th } from '@/components/ui/table'
-import { fmtDateTime, label } from '@/lib/format'
+import { fmtDate, fmtDateTime, label } from '@/lib/format'
 import { qs, useApi } from '@/lib/useApi'
 import { useAllItems } from '@/lib/useItems'
-import { CountsTab } from '@/pages/CountsTab'
+import { CostTab } from '@/pages/CostTab'
+import { RoundsTab } from '@/pages/RoundsTab'
 import { InsightsTab } from '@/pages/InsightsTab'
 import { ReceivingTab } from '@/pages/ReceivingTab'
 import { ReconciliationTab } from '@/pages/ReconciliationTab'
@@ -22,11 +23,12 @@ interface Txn {
   txn_type: string
   qty_delta: number
   occurred_at: string
+  invoice_date: string | null
   reason: string | null
   user: string | null
 }
 
-const TABS = [['insights', 'Insights'], ['transactions', 'Transactions'], ['receiving', 'Receiving'], ['transfers', 'Transfers'], ['counts', 'Physical counts'], ['reconciliation', 'Reconciliation']] as const
+const TABS = [['insights', 'Insights'], ['transactions', 'Transactions'], ['receiving', 'Receiving'], ['transfers', 'Transfers'], ['rounds', 'Count rounds'], ['reconciliation', 'Reconciliation'], ['costs', 'Costs']] as const
 const SIZE = 15
 
 function Transactions() {
@@ -53,11 +55,12 @@ function Transactions() {
         <Input aria-label="To date" type="date" className="w-auto" value={to} onChange={(e) => { setTo(e.target.value); setPage(1) }} />
       </div>
       <Table>
-        <thead><tr><Th>Time</Th><Th>Item</Th><Th>Location</Th><Th>Type</Th><Th className="text-right">Qty</Th><Th>By</Th><Th>Reason</Th></tr></thead>
+        <thead><tr><Th>Time</Th><Th>Invoice date</Th><Th>Item</Th><Th>Location</Th><Th>Type</Th><Th className="text-right">Qty</Th><Th>By</Th><Th>Reason</Th></tr></thead>
         <tbody>
-          {loading && !data ? <SkeletonRows cols={7} /> : data?.items.map((t) => (
+          {loading && !data ? <SkeletonRows cols={8} /> : data?.items.map((t) => (
             <tr key={t.id}>
               <Td>{fmtDateTime(t.occurred_at)}</Td>
+              <Td>{t.invoice_date ? fmtDate(t.invoice_date) : '-'}</Td>
               <Td className="font-medium">{byId.get(t.item_id)?.name ?? t.item_id}</Td>
               <Td>{places.get(t.location_id)}</Td>
               <Td>{label(t.txn_type)}</Td>
@@ -76,7 +79,8 @@ function Transactions() {
 
 export function StockMovementsPage() {
   const [params] = useSearchParams()
-  const asked = TABS.find(([key]) => key === params.get('tab'))
+  const wanted = params.get('tab') === 'counts' ? 'rounds' : params.get('tab')  // the old Physical counts address now opens count rounds
+  const asked = TABS.find(([key]) => key === wanted)
   const [tab, setTab] = useState<(typeof TABS)[number][0]>(asked ? asked[0] : 'insights')
   return (
     <div className="space-y-4">
@@ -90,8 +94,9 @@ export function StockMovementsPage() {
       {tab === 'transactions' && <Transactions />}
       {tab === 'receiving' && <ReceivingTab />}
       {tab === 'transfers' && <TransfersTab />}
-      {tab === 'counts' && <CountsTab />}
+      {tab === 'rounds' && <RoundsTab />}
       {tab === 'reconciliation' && <ReconciliationTab />}
+      {tab === 'costs' && <CostTab />}
     </div>
   )
 }

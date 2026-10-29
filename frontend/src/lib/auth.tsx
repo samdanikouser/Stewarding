@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, tokenStore } from '@/lib/api'
 
 export interface Me {
@@ -10,6 +11,7 @@ export interface Me {
   tier: 'manager' | 'supervisor' | 'steward'
   employee: { id: number; name: string; code: string } | null
   permissions: string[]
+  by_location: boolean
   locations: { id: number; code: string; name: string; timezone: string; geofence: boolean }[]
   modules: { key: string; label: string }[]
 }
@@ -29,18 +31,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(Boolean(tokenStore.get()))
 
-  const logout = useCallback(() => {
+  const navigate = useNavigate()
+
+  // an expired session keeps the address, so signing in again returns to the page that was open
+  const endSession = useCallback(() => {
     tokenStore.clear()
     setMe(null)
   }, [])
+
+  // signing out on purpose goes back to the start, so the next person does not land on this person's page
+  const logout = useCallback(() => {
+    endSession()
+    navigate('/', { replace: true })
+  }, [endSession, navigate])
 
   useEffect(() => {
     if (!tokenStore.get()) return
     api<Me>('/auth/me')
       .then(setMe)
-      .catch(logout)
+      .catch(endSession)
       .finally(() => setLoading(false))
-  }, [logout])
+  }, [endSession])
 
   const login = useCallback(async (email: string, password: string) => {
     const { access_token } = await api<{ access_token: string }>('/auth/login', { body: { email, password } })

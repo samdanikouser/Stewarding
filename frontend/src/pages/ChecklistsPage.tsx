@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { LocationSelect } from '@/components/LocationSelect'
+import { useLocation } from 'react-router-dom'
+import { ScanButton } from '@/components/ScanButton'
+import { WorkLocationSelect } from '@/components/WorkLocationSelect'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -22,7 +24,8 @@ export function ChecklistsPage() {
   const { me } = useAuth()
   const run = useRun()
   const toast = useToast()
-  const [locationId, setLocationId] = useState<number | null>(null)
+  const arrived = useLocation().state as { locationId?: number } | null
+  const [locationId, setLocationId] = useState<number | null>(arrived?.locationId ?? null)
   const [day, setDay] = useState(todayIso())
   const [view, setView] = useState<'day' | 'week'>('day')
   const [status, setStatus] = useState('')
@@ -87,13 +90,16 @@ export function ChecklistsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">Checklists</h1>
-        {canConfigure && <Button variant="outline" onClick={() => setConfiguring((c) => !c)}>{configuring ? 'Back to tasks' : 'Configure'}</Button>}
+        <div className="flex flex-wrap items-center gap-3">
+          {me?.permissions.includes('checklist.complete') && <ScanButton />}
+          {canConfigure && <Button variant="outline" onClick={() => setConfiguring((c) => !c)}>{configuring ? 'Back to tasks' : 'Configure'}</Button>}
+        </div>
       </div>
 
       {configuring ? <ChecklistConfig locationId={locationId} onLocation={setLocationId} /> : (
         <>
           <div className="filter-bar">
-            <LocationSelect value={locationId} onChange={setLocationId} />
+            <WorkLocationSelect value={locationId} onChange={setLocationId} />
             <div role="group" aria-label="View" className="inline-flex rounded-lg border border-border bg-surface p-0.5">
               {(['day', 'week'] as const).map((v) => (
                 <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)}
@@ -157,7 +163,7 @@ export function ChecklistsPage() {
             </div>
           )}
           {loading && !data ? <Skeleton className="h-32 w-full" /> : items.length === 0 ? (
-            <EmptyState title="No tasks for this selection" hint="Tasks are generated each day from the location's checklist templates, on the days each task is set to repeat." />
+            <EmptyState title="No tasks for this selection" />
           ) : view === 'week' ? (
             <div className="space-y-5">
               {days.map((d) => (
@@ -170,14 +176,19 @@ export function ChecklistsPage() {
           ) : cards(items)}
         </>
       )}
-      <Modal open={waiving} title={`Waive ${selected.length} task${selected.length === 1 ? '' : 's'}`} onClose={() => setWaiving(false)}>
-        <p className="mb-3 text-sm text-ink-muted">Waived tasks are closed without being done. The reason is recorded on every one of them.</p>
-        <Field label="Reason"><Input value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} /></Field>
-        <div className="mt-4 flex justify-end gap-2">
+      <Modal
+        open={waiving}
+        size="md"
+        title={`Waive ${selected.length} task${selected.length === 1 ? '' : 's'}`}
+        description="Waived tasks count as done. The reason is kept with each one."
+        onClose={() => setWaiving(false)}
+        footer={<>
           <Button variant="outline" onClick={() => setWaiving(false)}>Cancel</Button>
           <Button variant="danger" disabled={reason.trim().length < 5}
             onClick={() => afterBulk('waive-many', { instance_ids: selected, reason: reason.trim() }, (r) => `${r.waived} waived${r.skipped ? `, ${r.skipped} skipped` : ''}`)}>Waive</Button>
-        </div>
+        </>}
+      >
+        <Field label="Reason"><Input value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} /></Field>
       </Modal>
     </div>
   )

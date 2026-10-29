@@ -1,6 +1,6 @@
 import base64
 
-from .helpers import MGR, STEWARD, loc_id
+from .helpers import MGR, STEWARD, loc_id, make_lot
 
 ONE_PIXEL = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
@@ -13,9 +13,10 @@ def checks(point, phase):
     return [c for c in point["schedules"] if c["phase"] == phase]
 
 
-def start(client, h, point, item="Chicken thighs"):
+def start(client, h, point):
+    lot = make_lot(point["location_id"])
     return client.post("/api/monitoring/readings/batch", headers=h, json={"equipment_id": point["id"], "readings": [
-        {"schedule_id": c["id"], "value": 3, "reference": item} for c in checks(point, "start")]})
+        {"schedule_id": c["id"], "value": 3, "lot_ids": [lot]} for c in checks(point, "start")]})
 
 
 def finish(client, h, point, start_id, **over):
@@ -27,9 +28,12 @@ def test_defrosting_and_cooling_are_two_step_and_cooking_is_not(client, login, d
     m = login(MGR)
     phases = {t: {c["phase"] for c in make(client, m, db, t)["schedules"]} for t in ("defrosting", "cooling", "cooking")}
     assert phases == {"defrosting": {"start", "finish"}, "cooling": {"start", "finish"}, "cooking": {None}}
-    for template in ("defrosting", "cooling", "cooking"):
+    cooking = make(client, m, db, "cooking", "BQ")
+    assert all(c["require_reference"] and c["reference_label"] == "Item or product name" and not c["trace_lots"] for c in cooking["schedules"])
+    for template in ("defrosting", "cooling", "reheating"):
         point = make(client, m, db, template, "BQ")
-        assert all(c["require_reference"] and c["reference_label"] == "Item or product name" for c in point["schedules"] if c["phase"] != "finish")
+        assert all(c["trace_lots"] and not c["require_reference"] for c in point["schedules"] if c["phase"] != "finish")
+        assert not any(c["trace_lots"] for c in point["schedules"] if c["phase"] == "finish")
 
 
 def test_a_time_in_stays_pending_until_the_time_out_is_recorded(client, login, db, clock):
@@ -37,13 +41,13 @@ def test_a_time_in_stays_pending_until_the_time_out_is_recorded(client, login, d
     point = make(client, m, db, "defrosting")
     started = start(client, login(STEWARD), point).json()
     pending = client.get("/api/monitoring/pending", headers=m).json()
-    assert [(p["equipment_id"], p["item"]) for p in pending] == [(point["id"], "Chicken thighs")]
+    assert [(p["equipment_id"], p["item"]) for p in pending] == [(point["id"], started[0]["reference"])] and started[0]["reference"].startswith("POU-TEST-")
     due = [d for d in client.get("/api/monitoring/due", headers=m).json() if d["equipment_id"] == point["id"]]
     assert {d["stage"] for d in due} == {"Time in"}
 
     assert finish(client, m, point, None).status_code == 400
     done = finish(client, m, point, started[0]["id"])
-    assert done.status_code == 201 and {r["reference"] for r in done.json()} == {"Chicken thighs"}
+    assert done.status_code == 201 and {r["reference"] for r in done.json()} == {started[0]["reference"]}
     assert client.get("/api/monitoring/pending", headers=m).json() == []
     assert finish(client, m, point, started[0]["id"]).status_code == 409
 

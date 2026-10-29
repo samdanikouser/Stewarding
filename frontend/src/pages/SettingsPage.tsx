@@ -1,57 +1,65 @@
-import { useSearchParams } from 'react-router-dom'
-import { Button } from '@/components/ui/button'
-import { SettingsGeneral } from '@/pages/settings/SettingsGeneral'
+import type { ComponentType } from 'react'
+import { Navigate, useParams, useSearchParams } from 'react-router-dom'
+import { SectionTabs, type TabGroup } from '@/components/SectionTabs'
 import { SettingsInventoryLists } from '@/pages/settings/SettingsInventoryLists'
 import { SettingsItems } from '@/pages/settings/SettingsItems'
-import { SettingsOrganization } from '@/pages/settings/SettingsOrganization'
-import { SettingsRoles } from '@/pages/settings/SettingsRoles'
 import { SettingsLocations } from '@/pages/settings/SettingsLocations'
 import { SettingsLookups } from '@/pages/settings/SettingsLookups'
 import { SettingsMonitoring } from '@/pages/settings/SettingsMonitoring'
+import { SettingsOrganization } from '@/pages/settings/SettingsOrganization'
+import { SettingsQrCodes } from '@/pages/settings/SettingsQrCodes'
+import { SettingsRoles } from '@/pages/settings/SettingsRoles'
+import { SettingsRules } from '@/pages/settings/SettingsRules'
+import { SettingsSearch } from '@/pages/settings/SettingsSearch'
 import { SettingsShifts } from '@/pages/settings/SettingsShifts'
+import { SettingsClosures } from '@/pages/settings/SettingsClosures'
 import { SettingsSuppliers } from '@/pages/settings/SettingsSuppliers'
+import { SettingsTrainingCourses } from '@/pages/settings/SettingsTrainingCourses'
+import { SettingsTrainingProgress } from '@/pages/settings/SettingsTrainingProgress'
+import type { RulesSection } from '@/pages/settings/settingsRegistry'
+import { FIRST_SECTION, SECTION_GROUPS, resolveSection, type SectionKey } from '@/pages/settings/sections'
 
-const TABS = [
-  ['organization', 'Organization'],
-  ['general', 'Rules & alerts'],
-  ['locations', 'Locations'],
-  ['shifts', 'Shifts'],
-  ['monitoring', 'Monitoring setup'],
-  ['items', 'Item master'],
-  ['inventory', 'Categories & units'],
-  ['suppliers', 'Suppliers'],
-  ['lists', 'Dropdown lists'],
-  ['roles', 'Roles'],
-] as const
+// each topic is its own component so a half-edited form never carries over to another topic
+const rules = (section: RulesSection): ComponentType => () => <SettingsRules section={section} />
 
-type Tab = (typeof TABS)[number][0]
+const PAGES: Record<SectionKey, ComponentType> = {
+  organization: SettingsOrganization,
+  attendance: rules('attendance'),
+  'monitoring-rules': rules('monitoring-rules'),
+  'qr-codes': SettingsQrCodes,
+  approvals: rules('approvals'),
+  breakage: rules('breakage'),
+  receiving: rules('receiving'),
+  locations: SettingsLocations,
+  shifts: SettingsShifts,
+  closures: SettingsClosures,
+  monitoring: SettingsMonitoring,
+  items: SettingsItems,
+  inventory: SettingsInventoryLists,
+  suppliers: SettingsSuppliers,
+  'training-courses': SettingsTrainingCourses,
+  'training-progress': SettingsTrainingProgress,
+  lists: SettingsLookups,
+  roles: SettingsRoles,
+}
+
+const GROUPS: TabGroup[] = SECTION_GROUPS.map((group) => ({ title: group.title, items: group.items.map(([key, label]) => ({ key, label })) }))
 
 export function SettingsPage() {
-  const [params, setParams] = useSearchParams()
-  const requested = params.get('tab')
-  const tab: Tab = TABS.some(([key]) => key === requested) ? (requested as Tab) : 'general'
+  const { section } = useParams()
+  const [params] = useSearchParams()
+  const legacy = params.get('tab')
+  const wanted = resolveSection(legacy ?? section)
 
+  if (!wanted) return <Navigate to={`/settings/${FIRST_SECTION}`} replace />
+  if (legacy || wanted !== section) return <Navigate to={`/settings/${wanted}`} replace />
+
+  const Active = PAGES[wanted]
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <div role="tablist" aria-label="Settings sections" className="flex gap-2 overflow-x-auto pb-1">
-        {TABS.map(([key, text]) => (
-          <Button key={key} role="tab" aria-selected={tab === key} size="sm" variant={tab === key ? 'default' : 'outline'}
-            className="shrink-0" onClick={() => setParams({ tab: key })}>
-            {text}
-          </Button>
-        ))}
-      </div>
-      {tab === 'organization' && <SettingsOrganization />}
-      {tab === 'general' && <SettingsGeneral />}
-      {tab === 'locations' && <SettingsLocations />}
-      {tab === 'shifts' && <SettingsShifts />}
-      {tab === 'monitoring' && <SettingsMonitoring />}
-      {tab === 'items' && <SettingsItems />}
-      {tab === 'inventory' && <SettingsInventoryLists />}
-      {tab === 'suppliers' && <SettingsSuppliers />}
-      {tab === 'lists' && <SettingsLookups />}
-      {tab === 'roles' && <SettingsRoles />}
+      <SectionTabs label="Settings" groups={GROUPS} active={wanted} hrefFor={(key) => `/settings/${key}`} trailing={<SettingsSearch />} />
+      <Active />
     </div>
   )
 }

@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /srv
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+RUN chmod +x docker-entrypoint.render.sh \
+    && useradd --system --uid 10001 app \
+    && chown -R app /srv
+
+# Starts as root so the entrypoint can fix the disk's ownership, then runs the app as the app user.
+ENV STW_UPLOAD_DIR=/data/uploads PORT=8000
+EXPOSE 8000
+ENTRYPOINT ["./docker-entrypoint.render.sh"]

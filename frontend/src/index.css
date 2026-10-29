@@ -1,30 +1,122 @@
 @import "tailwindcss";
 
 @theme {
-  --color-page: #f3f6fb;
+  --color-page: #f6f4ef;
   --color-surface: #ffffff;
-  --color-surface-muted: #f1f4fa;
-  --color-border: #e4e9f2;
-  --color-ink: #0f172a;
-  --color-ink-muted: #5f6b85;
-  --color-brand: #2563d6;
-  --color-brand-deep: #1d4aa8;
-  --color-brand-soft: #e8f0fd;
+  --color-surface-muted: #f1eee7;
+  --color-border: #e3ded2;
+  --color-border-strong: #858f89;
+  --color-ink: #1b2420;
+  --color-ink-muted: #5c6661;
+  --color-brand: #0f6b5c;
+  --color-brand-deep: #0a4d42;
+  --color-brand-soft: #e1f1ec;
   --color-brand-ink: #ffffff;
-  --color-side: #0f1a33;
+  --color-side: #10231f;
   --color-danger: #b42318;
-  --color-danger-soft: #fdecea;
-  --color-warn: #b25e09;
-  --color-warn-soft: #fff4e0;
-  --color-ok: #067647;
-  --color-ok-soft: #e6f6ee;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-danger-ink: #ffffff;
+  --color-danger-soft: #fdebe8;
+  --color-warn: #9a5706;
+  --color-warn-soft: #fdf0d9;
+  --color-ok: #0f6a45;
+  --color-ok-soft: #e1f3e8;
+  --color-hero-a: #0f6b5c;
+  --color-hero-b: #0a4d42;
+  --color-hero-alert: #b42318;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-page: #0e1613;
+  --color-surface: #16211d;
+  --color-surface-muted: #1d2a25;
+  --color-border: #2a3a34;
+  --color-border-strong: #71827a;
+  --color-ink: #e8f0ec;
+  --color-ink-muted: #a8b8b0;
+  --color-brand: #4cc0a8;
+  --color-brand-deep: #75d6c1;
+  --color-brand-soft: #143229;
+  --color-brand-ink: #06201a;
+  --color-side: #08110f;
+  --color-danger: #ff9d92;
+  --color-danger-ink: #2b0a06;
+  --color-danger-soft: #3a1814;
+  --color-warn: #f2b45e;
+  --color-warn-soft: #37270d;
+  --color-ok: #62d49c;
+  --color-ok-soft: #123222;
+  --color-hero-a: #17695a;
+  --color-hero-b: #0b3f35;
 }
 
 body {
   background: var(--color-page);
   color: var(--color-ink);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-brand-soft);
+  color: var(--color-brand-deep);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+/* the ring of a text field sits inside its border, so it never covers the label above it */
+input:not([type='checkbox'], [type='radio'], [type='file']):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-offset: -2px;
+}
+
+@media (pointer: coarse) {
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+}
+
+.glass {
+  background: var(--color-page);
+}
+
+.scrim {
+  background: rgb(0 0 0 / 0.45);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .glass {
+    background: color-mix(in srgb, var(--color-page) 92%, transparent);
+    backdrop-filter: blur(14px) saturate(1.4);
+  }
+
+  .scrim {
+    backdrop-filter: blur(5px);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: var(--color-page);
+    backdrop-filter: none;
+  }
+
+  .scrim {
+    background: rgb(0 0 0 / 0.65);
+    backdrop-filter: none;
+  }
 }
 
 @keyframes toast-in {
@@ -54,4 +146,69 @@ body {
 
 h1 {
   letter-spacing: -0.015em;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-sheet,
+  .print-sheet * {
+    visibility: visible;
+  }
+  .print-sheet {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+  }
+}
+
+/* sign-in page: only transform and opacity move, so the animation stays smooth, and none of it runs when motion is reduced */
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-9px); }
+}
+
+@keyframes login-drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-10deg); }
+  50% { transform: translate3d(34px, -26px, 0) rotate(-3deg); }
+}
+
+@keyframes login-drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(12deg); }
+  50% { transform: translate3d(-30px, 24px, 0) rotate(5deg); }
+}
+
+@keyframes login-drift-c {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-4deg) scale(1); }
+  50% { transform: translate3d(22px, 30px, 0) rotate(6deg) scale(1.06); }
+}
+
+@keyframes login-ring {
+  0% { transform: scale(0.92); opacity: 0.45; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+
+@keyframes login-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-5px); }
+  40%, 60% { transform: translateX(5px); }
+}
+
+.login-rise { animation: login-rise 650ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.login-float { animation: login-float 6s ease-in-out infinite; }
+.login-drift-a { animation: login-drift-a 17s ease-in-out infinite; }
+.login-drift-b { animation: login-drift-b 21s ease-in-out infinite; }
+.login-drift-c { animation: login-drift-c 25s ease-in-out infinite; }
+.login-ring { animation: login-ring 3.6s ease-out infinite; }
+.login-shake { animation: login-shake 450ms cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-rise, .login-float, .login-drift-a, .login-drift-b, .login-drift-c, .login-ring, .login-shake { animation: none; }
 }

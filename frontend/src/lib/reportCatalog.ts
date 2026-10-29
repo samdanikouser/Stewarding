@@ -1,35 +1,35 @@
-export type ExtraFilter = 'employee' | 'frequency' | 'monitoringPoint' | 'supplier' | 'movement' | 'item'
+export type ExtraFilter = 'employee' | 'frequency' | 'monitoringPoint' | 'supplier' | 'movement' | 'item' | 'status' | 'foodGroup' | 'monitoringType' | 'checklist'
 
 export interface ReportDef {
   key: string
   title: string
-  blurb: string
   section: string
   filters: ExtraFilter[]
+  statuses?: [string, string][]
   summary?: boolean
 }
 
 export const REPORTS: ReportDef[] = [
-  { key: 'attendance', title: 'Attendance', section: 'People', filters: ['employee'],
-    blurb: 'Who worked, when they checked in and out, late arrivals, absences, leave and week offs, by location.' },
-  { key: 'attendance_sheet', title: 'Employee attendance sheet', section: 'People', filters: ['employee'],
-    blurb: 'One page per employee: days present, week off, absent, leave and hours worked, with every day listed. Ready to sign.' },
-  { key: 'checklist_chart', title: 'Checklist completion chart', section: 'Checklists', filters: ['frequency'],
-    blurb: 'Tasks down the page, dates across, a tick for each task done. Shows who completed and who approved, with exceptions.' },
-  { key: 'checklists', title: 'Checklist record', section: 'Checklists', filters: ['frequency', 'employee'],
-    blurb: 'Every task with the time it was completed, who did it and who approved it. Suits longer periods.' },
-  { key: 'monitoring', title: 'Monitoring record', section: 'Food safety', filters: ['monitoringPoint'],
-    blurb: 'Each reading with value, limits, result, who recorded it, who approved it and any corrective action.' },
-  { key: 'receipts', title: 'Receipts and invoices', section: 'Stock', filters: ['supplier'],
-    blurb: 'Deliveries and returns by invoice with unit cost, discounts and totals.' },
-  { key: 'movements', title: 'Stock issues and movements', section: 'Stock', filters: ['movement', 'item'],
-    blurb: 'Every stock movement: receipts, issues, returns, transfers, breakage and adjustments, with who and why.' },
-  { key: 'stock_cost', title: 'Stock cost report', section: 'Stock', filters: [],
-    blurb: 'Opening value, purchases, closing value and the cost consumed for each item, at weighted average cost, with issues, breakage and count losses shown separately.' },
-  { key: 'stock_cost_category', title: 'Stock cost by category', section: 'Stock', filters: [],
-    blurb: 'The stock cost report one line per category, per location and for all locations together, with each category\'s share of the cost.' },
-  { key: 'summary', title: 'Operations summary', section: 'Overview', filters: [], summary: true,
-    blurb: 'Daily, weekly or monthly scorecard across attendance, checklists, monitoring, breakage and stock.' },
+  { key: 'attendance', title: 'Attendance', section: 'People', filters: ['employee', 'status'],
+    statuses: [['present', 'Present'], ['late', 'Late'], ['absent', 'Absent'], ['leave', 'On leave'], ['week_off', 'Week off']] },
+  { key: 'attendance_sheet', title: 'Employee attendance sheet', section: 'People', filters: ['employee'] },
+  { key: 'checklist_chart', title: 'Checklist completion chart', section: 'Checklists', filters: ['checklist', 'frequency'] },
+  { key: 'checklists', title: 'Checklist record', section: 'Checklists', filters: ['checklist', 'frequency', 'employee', 'status'],
+    statuses: [['pending', 'Not done'], ['completed', 'Done'], ['pending_verification', 'Awaiting approval'], ['verified', 'Approved'], ['failed', 'Rejected'], ['waived', 'Waived']] },
+  { key: 'monitoring', title: 'Monitoring record', section: 'Food safety', filters: ['monitoringType', 'monitoringPoint', 'status'],
+    statuses: [['failed', 'Failed'], ['passed', 'Passed'], ['awaiting', 'Awaiting approval']] },
+  { key: 'lots', title: 'Lot register', section: 'Food safety', filters: ['supplier', 'foodGroup', 'status'],
+    statuses: [['active', 'Active'], ['on_hold', 'On hold'], ['used_up', 'Used up'], ['discarded', 'Discarded']] },
+  { key: 'receipts', title: 'Receipts and invoices', section: 'Stock', filters: ['supplier'] },
+  { key: 'movements', title: 'Stock issues and movements', section: 'Stock', filters: ['movement', 'item'] },
+  { key: 'stock_cost', title: 'Stock cost report', section: 'Stock', filters: [] },
+  { key: 'stock_cost_category', title: 'Stock cost by category', section: 'Stock', filters: [] },
+  { key: 'inventory_detail', title: 'Detailed inventory report (by location and item)', section: 'Stock', filters: [] },
+  { key: 'summary', title: 'Operations summary', section: 'Overview', filters: [], summary: true },
+]
+
+export const FOOD_GROUPS = [
+  ['poultry', 'Poultry'], ['red_meat', 'Red meat'], ['seafood', 'Seafood'], ['dairy', 'Dairy'], ['eggs', 'Eggs'], ['other', 'Other'],
 ]
 
 export const SECTIONS = ['People', 'Checklists', 'Food safety', 'Stock', 'Overview']

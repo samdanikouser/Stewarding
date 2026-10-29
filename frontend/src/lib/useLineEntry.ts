@@ -12,6 +12,13 @@ export function useLineEntry<T extends object>(blank: T, isComplete: (row: T) =>
     setIncomplete(null)
     setRows((all) => all.map((row, n) => (n === index ? { ...row, ...patch, committed: false } : row)))
   }
+  const load = (next: T[]) => {
+    setIncomplete(null)
+    setRows(next.length ? next.map((row) => ({ ...row, committed: true })) : [{ ...blank }])
+  }
+  /** Changes a row only if it still looks as it did when the change was worked out (an answer that arrives late must not overwrite newer input). */
+  const patchIf = (index: number, still: (row: T) => boolean, patch: Partial<T>) =>
+    setRows((all) => all.map((row, n) => (n === index && still(row) ? { ...row, ...patch } : row)))
   const addRow = () => setRows((all) => [...all, { ...blank }])
   const remove = (index: number) => setRows((all) => all.filter((_, n) => n !== index))
   const reset = () => {
@@ -38,5 +45,5 @@ export function useLineEntry<T extends object>(blank: T, isComplete: (row: T) =>
     },
   })
 
-  return { rows, update, addRow, remove, reset, rowProps, attachList: setList, incomplete }
+  return { rows, update, patchIf, addRow, remove, reset, load, rowProps, attachList: setList, incomplete }
 }

@@ -14,7 +14,7 @@ FIELDS = ("name", "legal_name", "address", "phone", "email", "website", "registr
 def get_organization(db: Session) -> dict:
     org = db.get(Organization, 1)
     return {**{f: (getattr(org, f) if org else None) or "" for f in FIELDS}, "logo": org.logo if org else None,
-            "timezone": (org.timezone if org else None) or DEFAULT_TIMEZONE}
+            "timezone": (org.timezone if org else None) or DEFAULT_TIMEZONE, "currency": (org.currency if org else None) or ""}
 
 
 def stamp(moment: datetime, tz_name: str) -> str:

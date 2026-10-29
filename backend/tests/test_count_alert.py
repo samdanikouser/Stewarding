@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from app.models import AuditLog, InventoryBalance, Notification
+from app.models import AuditLog, InventoryBalance, InventoryItem, Notification
 
 from .helpers import MGR, SUP, item_id, loc_id
 from .test_stock import count
@@ -34,8 +34,12 @@ def test_a_manager_can_add_opening_stock_when_there_is_no_invoice(client, login,
     sup, m = login(SUP), login(MGR)
     assert post_manual(client, sup, db, "opening", 50).status_code == 403     # only a manager
     assert post_manual(client, m, db, "opening", 50, reason="x").status_code == 400   # a reason is needed
-    assert post_manual(client, m, db, "opening", 50).status_code == 201
-    assert count(client, sup, db, 250, reason="Counted with the new opening stock").status_code == 201
+    assert post_manual(client, m, db, "opening", 50).status_code == 409      # PL-001 already has opening stock here
+    pl = db.scalar(select(InventoryItem).where(InventoryItem.code == "PL-001"))
+    made = client.post("/api/inventory/items", headers=m, json={"name": "Opening Test Tray", "category_id": pl.category_id, "unit_id": pl.unit_id}).json()["code"]
+    assert post_manual(client, m, db, "opening", 50, code=made).status_code == 201
+    assert post_manual(client, m, db, "opening", 50, code=made).status_code == 409      # opening stock is recorded once
+    assert count(client, sup, db, 50, code=made).status_code == 201
 
 
 def test_a_count_above_the_system_quantity_needs_a_reason_and_is_flagged(client, login, db, clock):

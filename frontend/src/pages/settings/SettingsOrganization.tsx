@@ -19,19 +19,21 @@ interface Organization {
   registration_number: string
   report_footer: string
   timezone: string
+  currency: string
   logo: string | null
 }
 
-const FIELDS: [keyof Omit<Organization, 'logo'>, string, string?][] = [
-  ['name', 'Organization name', 'Shown in the app header and at the top of every report.'],
+const FIELDS: [keyof Omit<Organization, 'logo'>, string][] = [
+  ['name', 'Organization name'],
   ['legal_name', 'Legal name'],
   ['address', 'Address'],
   ['phone', 'Phone'],
   ['email', 'Email'],
-  ['website', 'Website', 'Start with https://'],
+  ['website', 'Website'],
   ['registration_number', 'Registration or licence number'],
-  ['report_footer', 'Report footer note', 'Printed at the foot of every page, for example Confidential.'],
-  ['timezone', 'Time zone', 'Times across the app and on reports. New locations start with this zone.'],
+  ['report_footer', 'Report footer note'],
+  ['timezone', 'Time zone'],
+  ['currency', 'Currency (for example KWD)'],
 ]
 
 export function SettingsOrganization() {
@@ -74,15 +76,14 @@ export function SettingsOrganization() {
         <Card>
           <CardHeader>
             <CardTitle>Organization details</CardTitle>
-            <p className="text-sm text-ink-muted">These appear in the header of the app and of every PDF, Excel and CSV report, so reports look like your own documents.</p>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
-            {FIELDS.map(([key, text, hint]) => (
+            {FIELDS.map(([key, text]) => (
               <div key={key} className={key === 'address' || key === 'report_footer' ? 'sm:col-span-2' : undefined}>
-                <Field label={text} hint={hint}>
+                <Field label={text}>
                   {key === 'timezone'
                     ? <TimezoneInput value={value(key)} onChange={(zone) => setDraft((d) => ({ ...d, timezone: zone }))} />
-                    : <Input required={key === 'name'} value={value(key)} maxLength={key === 'address' ? 500 : 160}
+                    : <Input required={key === 'name'} value={value(key)} maxLength={key === 'address' ? 500 : key === 'currency' ? 8 : 160}
                       onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} />}
                 </Field>
               </div>
@@ -95,7 +96,6 @@ export function SettingsOrganization() {
       <Card className="h-fit">
         <CardHeader>
           <CardTitle>Logo</CardTitle>
-          <p className="text-sm text-ink-muted">PNG or JPEG, up to 2 MB. A wide logo on a plain or transparent background prints best.</p>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex h-28 items-center justify-center rounded-md border border-dashed border-border bg-surface-muted">

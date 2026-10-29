@@ -38,12 +38,11 @@ export function SkeletonRows({ cols, rows = 5 }: { cols: number; rows?: number }
   )
 }
 
-export function EmptyState({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
+export function EmptyState({ title, action }: { title: string; action?: ReactNode }) {
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-brand-soft"><Inbox className="h-6 w-6 text-brand" aria-hidden /></span>
       <p className="font-medium">{title}</p>
-      {hint && <p className="text-sm text-ink-muted">{hint}</p>}
       {action}
     </div>
   )

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .. import timeutil
 from ..models import (CorrectiveAction, Equipment, EquipmentSchedule, Location, Notification, Shift,
                       TemperatureReading)
+from .checklists import is_closed
 from .reference import locations_by_id, shifts_by_id
 from .settings import get_setting
 
@@ -91,9 +92,14 @@ def has_reading(sorted_times: list[datetime], low: datetime, high: datetime) -> 
     return i < len(sorted_times) and sorted_times[i] < high
 
 
-def slot_status(slot: datetime, upper: datetime, readings: list[datetime], now: datetime, grace: int) -> str:
-    """`readings` must be sorted."""
-    window_start = slot - timedelta(minutes=grace)
+def window_low(slot: datetime, first: bool, day_start: datetime, grace: timedelta) -> datetime:
+    """Where a slot's window opens; the first slot of the day also accepts a reading from earlier that day."""
+    return min(day_start, slot - grace) if first else slot - grace
+
+
+def slot_status(slot: datetime, upper: datetime, readings: list[datetime], now: datetime, grace: int, low: datetime | None = None) -> str:
+    """`readings` must be sorted; `low` is where the slot's window opens, a grace period before the slot when not given."""
+    window_start = low or slot - timedelta(minutes=grace)
     if has_reading(readings, window_start, upper):
         return "done"
     if now < slot:
@@ -133,6 +139,9 @@ def due_checks(db: Session, equipment: list[Equipment], now: datetime) -> list[d
     for eq in active:
         tz = locations[eq.location_id].timezone
         day = timeutil.local_date(now, tz)
+        if is_closed(db, eq.location_id, day):
+            continue  # a closed day expects no checks
+        day_start = timeutil.local_to_utc(day, time(0, 0), tz)
         end_of_day = timeutil.local_to_utc(day + timedelta(days=1), time(0, 0), tz)
         for sched in schedules[eq.id]:
             slots = expected_slots(sched, shifts.get(sched.shift_id), tz, day)
@@ -141,7 +150,8 @@ def due_checks(db: Session, equipment: list[Equipment], now: datetime) -> list[d
                 upper = slots[i + 1] if i + 1 < len(slots) else end_of_day
                 out.append({"equipment_id": eq.id, "equipment": eq.name, "location_id": eq.location_id,
                             "schedule_id": sched.id, "stage": sched.stage,
-                            "slot_at": slot.isoformat() + "Z", "status": slot_status(slot, upper, mine, now, grace)})
+                            "slot_at": slot.isoformat() + "Z", "opens_at": (slot - timedelta(minutes=grace)).isoformat() + "Z", "open": slot - timedelta(minutes=grace) <= now,
+                            "status": slot_status(slot, upper, mine, now, grace, window_low(slot, i == 0, day_start, timedelta(minutes=grace)))})
     return out
 
 
@@ -158,10 +168,24 @@ def already_recorded(db: Session, eq: Equipment, sched: EquipmentSchedule, now: 
         return False
     i = started[-1]
     upper = slots[i + 1] if i + 1 < len(slots) else timeutil.local_to_utc(day + timedelta(days=1), time(0, 0), tz)
+    low = window_low(slots[i], i == 0, timeutil.local_to_utc(day, time(0, 0), tz), timedelta(minutes=grace))
     times = sorted(db.scalars(select(TemperatureReading.recorded_at).where(
         TemperatureReading.schedule_id == sched.id, TemperatureReading.retest_of_id.is_(None), TemperatureReading.rejected_at.is_(None),
-        TemperatureReading.recorded_at >= slots[i] - timedelta(minutes=grace), TemperatureReading.recorded_at < upper)))
-    return has_reading(times, slots[i] - timedelta(minutes=grace), upper)
+        TemperatureReading.recorded_at >= low, TemperatureReading.recorded_at < upper)))
+    return has_reading(times, low, upper)
+
+
+def closed_until(db: Session, eq: Equipment, sched: EquipmentSchedule, now: datetime) -> datetime | None:
+    """When a scheduled check opens for recording, or none if it is open now, has no set time today or is a time in or out log."""
+    if sched.timing == "manual" or sched.phase:
+        return None
+    location = db.get(Location, eq.location_id)
+    day = timeutil.local_date(now, location.timezone)
+    slots = expected_slots(sched, db.get(Shift, sched.shift_id) if sched.shift_id else None, location.timezone, day)
+    opens = timedelta(minutes=get_setting(db, "temp.due_grace_minutes"))
+    if not slots or any(slot - opens <= now for slot in slots):
+        return None
+    return slots[0] - opens
 
 
 def pending_entries(db: Session, equipment: list[Equipment], now: datetime) -> list[dict]:

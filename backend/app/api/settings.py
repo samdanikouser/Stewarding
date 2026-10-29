@@ -7,16 +7,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..audit import audit
+from ..services.deletion import delete_if_unused
 from ..db import get_db
 from ..deps import require
 from ..models import Location, Setting, User
 from ..pagination import row
-from ..services.settings import DEFAULTS, all_settings
+from ..services.settings import DEFAULTS, LIMITS, all_settings
 from ..services.snapshots import forget_from
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-MAX_SETTING = 100_000
 LOCATION_FIELDS = ("id", "code", "name", "kind", "timezone", "active", "latitude", "longitude", "geofence_radius_m")
 
 
@@ -63,7 +63,7 @@ def _location(loc: Location) -> dict:
 
 @router.get("")
 def read_settings(user: User = Depends(require("settings.manage")), db: Session = Depends(get_db)):
-    return {"settings": all_settings(db), "locations": [_location(loc) for loc in db.scalars(select(Location).order_by(Location.name))]}
+    return {"settings": all_settings(db), "limits": LIMITS, "locations": [_location(loc) for loc in db.scalars(select(Location).order_by(Location.name))]}
 
 
 @router.put("")
@@ -71,13 +71,10 @@ def update_settings(body: SettingsIn, user: User = Depends(require("settings.man
     unknown = set(body.values) - set(DEFAULTS)
     if unknown:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown setting: {sorted(unknown)[0]}")
-    if any(v < 0 or v > MAX_SETTING for v in body.values.values()):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Values must be between 0 and {MAX_SETTING}")
-    for key in ("approval.checklists", "attendance.face_required"):
-        if body.values.get(key, 0) not in (0, 1):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{key} must be 0 or 1")
-    if "attendance.face_match_max" in body.values and not 10 <= body.values["attendance.face_match_max"] <= 80:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The face match limit must be between 10 and 80")
+    for key, value in body.values.items():
+        low, high = LIMITS[key]
+        if not low <= value <= high:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{key} must be between {low} and {high}")
     before = all_settings(db)
     for key, value in body.values.items():
         record = db.get(Setting, key)
@@ -126,3 +123,15 @@ def update_location(location_id: int, body: LocationUpdate, user: User = Depends
     audit(db, user, "location.update", "location", loc.id, before, data)
     db.commit()
     return _location(loc)
+
+
+@router.delete("/locations/{location_id}")
+def delete_location(location_id: int, user: User = Depends(require("settings.manage")), db: Session = Depends(get_db)):
+    loc = db.get(Location, location_id)
+    if not loc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Location not found")
+    before = {"code": loc.code, "name": loc.name}
+    delete_if_unused(db, loc, loc.name)
+    audit(db, user, "location.delete", "location", location_id, before, None)
+    db.commit()
+    return {"deleted": location_id}

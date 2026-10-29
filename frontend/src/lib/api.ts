@@ -68,3 +68,9 @@ export async function uploadLogo(file: File): Promise<void> {
   form.append('file', file)
   await send('/organization/logo', { method: 'POST', body: form })
 }
+
+export async function uploadItemImage(itemId: number, file: File): Promise<void> {
+  const form = new FormData()
+  form.append('file', file)
+  await send(`/inventory/items/${itemId}/image`, { method: 'POST', body: form })
+}

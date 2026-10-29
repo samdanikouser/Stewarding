@@ -1,0 +1,53 @@
+databases:
+  - name: plato-db
+    databaseName: plato
+    user: plato
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16"
+    region: frankfurt
+
+services:
+  # The API is private: only the web service below can reach it.
+  - type: pserv
+    name: plato-api
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./backend/Dockerfile.render
+    dockerContext: ./backend
+    disk:
+      name: uploads
+      mountPath: /data
+      sizeGB: 10  # training videos are large; this disk holds every upload and can only be made bigger
+    envVars:
+      - key: STW_DATABASE_URL
+        fromDatabase:
+          name: plato-db
+          property: connectionString
+      - key: STW_SECRET_KEY
+        generateValue: true
+      - key: STW_UPLOAD_DIR
+        value: /data/uploads
+      # browser push alerts; Render asks for these when the blueprint is applied (see docs/DEPLOYMENT.md)
+      - key: STW_VAPID_PUBLIC_KEY
+        sync: false
+      - key: STW_VAPID_PRIVATE_KEY
+        sync: false
+      - key: STW_VAPID_SUBJECT
+        sync: false
+
+  # The public site: serves the app and forwards /api to the private API.
+  - type: web
+    name: plato
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./frontend/Dockerfile.render
+    dockerContext: ./frontend
+    healthCheckPath: /
+    envVars:
+      - key: BACKEND_ADDR
+        fromService:
+          type: pserv
+          name: plato-api
+          property: hostport

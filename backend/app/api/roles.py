@@ -9,7 +9,7 @@ from ..audit import audit
 from ..db import get_db
 from ..deps import permissions_of, require
 from ..models import Role, RolePermission, User
-from ..permissions import ALL_PERMISSIONS, CUSTOM_TIERS, MANAGER, PERMISSION_CATALOG
+from ..permissions import ALL_PERMISSIONS, CUSTOM_TIERS, MANAGER, PERMISSION_CATALOG, ROLE_PERMISSIONS
 
 router = APIRouter(prefix="/api/roles", tags=["roles"])
 
@@ -59,7 +59,8 @@ def _users_per_role(db: Session) -> dict[int, int]:
 
 def _dict(role: Role, users: int) -> dict:
     return {"id": role.id, "name": role.name, "label": role.label or role.name, "tier": role.tier, "builtin": role.builtin,
-            "permissions": sorted(p.permission for p in role.permissions), "users": users}
+            "permissions": sorted(p.permission for p in role.permissions), "users": users,
+            "defaults": sorted(ROLE_PERMISSIONS[role.name]) if role.builtin and role.name in ROLE_PERMISSIONS else None}
 
 
 def _name_for(db: Session, label: str) -> str:

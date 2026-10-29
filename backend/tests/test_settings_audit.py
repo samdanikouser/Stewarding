@@ -131,3 +131,24 @@ def test_critical_operations_are_audited(client, login, db, clock):
     client.post(f"/api/checklists/instances/{task['id']}/waive", json={"reason": "Equipment is out of order"}, headers=sup)
     actions = {a.action for a in db.scalars(select(AuditLog))}
     assert {"inventory.adjustment", "checklist.waive"} <= actions
+
+
+def test_audit_search_and_filter_options(client, login, db):
+    from app.audit import audit
+    from app.models import User
+
+    m = login(MGR)
+    manager = db.scalar(select(User).where(User.email == MGR))
+    audit(db, manager, "location.create", "location", 7)
+    audit(db, manager, "shift.update", "shift", 3)
+    audit(db, None, "scheduler.run", "system")
+    db.commit()
+
+    def total(query):
+        return client.get(f"/api/audit?{query}", headers=m).json()["total"]
+
+    assert (total("search=location"), total("search=SHIFT"), total("search=7"), total("search=zzz")) == (1, 1, 1, 0)
+    options = client.get("/api/audit/options", headers=m).json()
+    assert {"location", "shift", "system"} <= set(options["entities"]) and "scheduler.run" in options["actions"]
+    assert {"id": manager.id, "name": "Maya Manager"} in options["users"]
+    assert client.get("/api/audit/options", headers=login(SUP)).status_code == 403

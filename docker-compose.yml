@@ -25,6 +25,9 @@ services:
       STW_SECRET_KEY: ${STW_SECRET_KEY:?set STW_SECRET_KEY in .env (32+ random characters)}
       STW_CORS_ORIGINS: ${STW_CORS_ORIGINS:-http://localhost:8080}
       STW_TOKEN_MINUTES: ${STW_TOKEN_MINUTES:-600}
+      STW_VAPID_PUBLIC_KEY: ${STW_VAPID_PUBLIC_KEY:-}
+      STW_VAPID_PRIVATE_KEY: ${STW_VAPID_PRIVATE_KEY:-}
+      STW_VAPID_SUBJECT: ${STW_VAPID_SUBJECT:-mailto:admin@example.com}
     volumes:
       - uploads:/data/uploads
 

@@ -1,14 +1,34 @@
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import timeutil
-from ..models import ChecklistInstance, ChecklistTask, ChecklistTemplate, Location, Shift
+from ..models import ChecklistInstance, ChecklistTask, ChecklistTemplate, ClosedDay, Location, Shift, TaskAssignment, TaskCompletion
+from .settings import get_setting
 
 OPEN = ("not_started", "in_progress")
 DONE = ("completed", "pending_verification", "verified", "waived")
+
+
+def overdue_after(db: Session, now: datetime | None = None) -> datetime:
+    """The moment to measure deadlines against: a task counts as overdue only once its grace period has also passed."""
+    return (now or timeutil.utc_now()) - timedelta(minutes=get_setting(db, "checklist.grace_minutes"))
+
+
+PRIORITY_RANK = {"normal": 0, "low": 0, "high": 1, "critical": 2}
+
+
+def alerts_for(db: Session, priority: str | None) -> bool:
+    """Whether a task of this priority sends overdue alerts (Settings > Approvals and escalation); it always shows on screen."""
+    return PRIORITY_RANK.get(priority or "normal", 0) >= get_setting(db, "checklist.alert_priority")
+
+
+def is_closed(db: Session, location_id: int, day: date) -> bool:
+    """Whether the location is marked closed that day (or every location is), so nothing is expected of it."""
+    return db.scalar(select(ClosedDay.id).where(ClosedDay.start_date <= day, ClosedDay.end_date >= day,
+                                                or_(ClosedDay.location_id.is_(None), ClosedDay.location_id == location_id)).limit(1)) is not None
 
 
 def effective_status(inst: ChecklistInstance, now: datetime) -> str:
@@ -29,6 +49,8 @@ def generate_for_location(db: Session, location: Location, now: datetime) -> int
     """Creates today's instances (location-local date); safe to run repeatedly."""
     tz = location.timezone
     today = timeutil.local_date(now, tz)
+    if is_closed(db, location.id, today):
+        return 0
     weekday = str(today.weekday())
     shifts = {s.id: s for s in db.scalars(select(Shift).where(Shift.active.is_(True), Shift.kind == "work"))}
     rows = db.execute(
@@ -66,6 +88,26 @@ def generate_for_location(db: Session, location: Location, now: datetime) -> int
 
 def mark_overdue(db: Session, now: datetime) -> int:
     result = db.execute(update(ChecklistInstance)
-                        .where(ChecklistInstance.status.in_(OPEN), ChecklistInstance.due_at < now)
+                        .where(ChecklistInstance.status.in_(OPEN), ChecklistInstance.due_at < overdue_after(db, now))
                         .values(status="overdue"))
     return result.rowcount
+
+
+def drop_untouched_instances(db: Session, task_ids: list[int], since: date) -> bool:
+    """Removes the instances the scheduler made for these tasks when nobody ever worked on them, so a checklist made in error can be deleted.
+
+    Returns False and removes nothing when any instance was started, completed, verified or waived, or when one from before `since`
+    went untouched: a checklist ignored for days is a record of work not done, not a mistake.
+    """
+    if not task_ids:
+        return True
+    mine = select(ChecklistInstance.id).where(ChecklistInstance.task_id.in_(task_ids))
+    worked_on = db.scalar(select(ChecklistInstance.id).where(
+        ChecklistInstance.task_id.in_(task_ids),
+        or_(ChecklistInstance.status.not_in(("not_started", "overdue")), ChecklistInstance.completed_at.is_not(None),
+            ChecklistInstance.local_date < since)).limit(1))
+    if worked_on or db.scalar(select(TaskCompletion.id).where(TaskCompletion.instance_id.in_(mine)).limit(1)):
+        return False
+    db.execute(delete(TaskAssignment).where(TaskAssignment.instance_id.in_(mine)))
+    db.execute(delete(ChecklistInstance).where(ChecklistInstance.task_id.in_(task_ids)))
+    return True

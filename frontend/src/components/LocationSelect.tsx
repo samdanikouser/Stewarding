@@ -6,12 +6,13 @@ interface LocationSelectProps {
   value: number | null
   onChange: (id: number | null) => void
   allowAll?: boolean
+  preferred?: number[]
   className?: string
 }
 
-export function LocationSelect({ value, onChange, allowAll = false, className = 'w-auto min-w-44' }: LocationSelectProps) {
+export function LocationSelect({ value, onChange, allowAll = false, preferred = [], className = 'w-auto min-w-44' }: LocationSelectProps) {
   const { me } = useAuth()
-  const locations = me?.locations ?? []
+  const locations = [...(me?.locations ?? [])].sort((a, b) => Number(preferred.includes(b.id)) - Number(preferred.includes(a.id)))
 
   const firstId = locations[0]?.id
   useEffect(() => {
@@ -28,7 +29,7 @@ export function LocationSelect({ value, onChange, allowAll = false, className = 
       {allowAll && <option value="">All locations</option>}
       {locations.map((location) => (
         <option key={location.id} value={location.id}>
-          {location.name}
+          {location.name}{preferred.includes(location.id) ? ' (rostered today)' : ''}
         </option>
       ))}
     </Select>

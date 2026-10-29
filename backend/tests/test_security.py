@@ -12,7 +12,8 @@ from app.models import Employee, User
 from .conftest import PASSWORD
 from .helpers import MGR, STEWARD, STEWARD_RB, SUP, SUP_RB, item_id, loc_id
 
-PUBLIC = {("POST", "/api/auth/login"), ("GET", "/api/health"), ("GET", "/api/organization/public"), ("GET", "/api/organization/logo")}
+PUBLIC = {("POST", "/api/auth/login"), ("POST", "/api/auth/signup"),("GET", "/api/health"), ("GET", "/api/organization/public"), ("GET", "/api/organization/logo"),
+          ("GET", "/api/training/media/{token}")}  # a player cannot send headers, so this link is signed and short-lived instead
 
 
 def api_routes():

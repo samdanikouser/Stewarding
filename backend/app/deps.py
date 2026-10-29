@@ -50,14 +50,15 @@ def require(permission: str):
 
 
 def scoped_locations(user: User, db: Session) -> set[int] | None:
-    """Location ids the user may touch; None means every location (manager)."""
+    """Location ids the user may touch; None means every location (a manager, or an employee tied to no outlet)."""
     if user.role.tier == MANAGER:
         return None
     if not user.employee:
         return set()
     employee_id = user.employee.id
-    return memo(db, ("scope", employee_id), lambda: set(db.scalars(
+    placed = memo(db, ("scope", employee_id), lambda: set(db.scalars(
         select(EmployeeLocation.location_id).where(EmployeeLocation.employee_id == employee_id))))
+    return placed or None  # an employee with no outlets is not tied to one: every location, including ones added later
 
 
 def check_location(user: User, db: Session, location_id: int) -> None:
@@ -67,3 +68,26 @@ def check_location(user: User, db: Session, location_id: int) -> None:
     allowed = scoped_locations(user, db)
     if allowed is not None and location_id not in allowed:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Location not assigned to you")
+
+
+def employee_place(user: User, db: Session, emp, location_id: int | None):
+    """The location a record for this employee belongs to: the one named, else where they work (first by name), else the first one the user may use.
+
+    An employee with no locations works anywhere, so the named place needs no assignment for them."""
+    if location_id is not None:
+        check_location(user, db, location_id)
+        assigned = set(db.scalars(select(EmployeeLocation.location_id).where(EmployeeLocation.employee_id == emp.id)))
+        if assigned and location_id not in assigned:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Employee is not active at this location")
+        return db.get(Location, location_id)
+    query = select(Location).where(Location.active.is_(True)).order_by(Location.name)
+    assigned = set(db.scalars(select(EmployeeLocation.location_id).where(EmployeeLocation.employee_id == emp.id)))
+    if assigned:
+        query = query.where(Location.id.in_(assigned))
+    allowed = scoped_locations(user, db)
+    if allowed is not None:
+        query = query.where(Location.id.in_(allowed))
+    place = db.scalars(query).first()
+    if place is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No location is available for this employee")
+    return place

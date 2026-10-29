@@ -39,6 +39,15 @@ class OrganizationIn(BaseModel):
     registration_number: str | None = Field(default=None, max_length=60)
     report_footer: str | None = Field(default=None, max_length=300)
     timezone: str = Field(default="Asia/Kuwait", max_length=64)
+    currency: str | None = Field(default=None, max_length=8)
+
+    @field_validator("currency")
+    @classmethod
+    def _currency(cls, value):
+        value = (value or "").strip().upper()
+        if value and not re.match(r"^[A-Z$€£]{1,8}$", value):
+            raise ValueError("Use the currency letters or symbol, for example KWD")
+        return value or None
 
     @field_validator("timezone")
     @classmethod

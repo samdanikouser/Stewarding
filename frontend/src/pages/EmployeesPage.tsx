@@ -1,6 +1,7 @@
-import { ArrowDown, ArrowUp, Plus, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, KeyRound, Pencil, Plus, Power, ScanFace, Search, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ActionMenu } from '@/components/ui/action-menu'
 import { FaceCapture, type FaceResult } from '@/components/FaceCapture'
 import { Modal } from '@/components/ui/modal'
 import { LocationSelect } from '@/components/LocationSelect'
@@ -9,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { StatusBadge } from '@/components/ui/status-badge'
-import { EmptyState, SkeletonRows, Table, Td, Th } from '@/components/ui/table'
+import { EmptyState, Skeleton, SkeletonRows, Table, Td, Th } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { Badge } from '@/components/ui/badge'
@@ -26,6 +27,7 @@ interface Listing {
 }
 
 const SIZE = 15
+const initials = (name: string) => name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
 const COLUMNS = [
   ['employee_code', 'ID'],
   ['full_name', 'Name'],
@@ -46,6 +48,7 @@ export function EmployeesPage() {
   const [editing, setEditing] = useState<EmployeeRow | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [toggling, setToggling] = useState<EmployeeRow | null>(null)
+  const [removing, setRemoving] = useState<EmployeeRow | null>(null)
   const [resetting, setResetting] = useState<EmployeeRow | null>(null)
   const [enrolling, setEnrolling] = useState<EmployeeRow | null>(null)
   const toast = useToast()
@@ -88,8 +91,32 @@ export function EmployeesPage() {
     if (ok) reload()
   }
 
+
+  async function confirmRemove() {
+    if (!removing) return
+    const done = await run(() => api(`/employees/${removing.id}`, { method: 'DELETE' }), 'Employee deleted')
+    setRemoving(null)
+    if (done) reload()
+  }
+
+  const rowActions = (e: EmployeeRow) => (
+    <>
+      <Button size="sm" variant="outline" onClick={() => { setEditing(e); setFormOpen(true) }}><Pencil className="h-3.5 w-3.5" /> Edit</Button>
+      <ActionMenu
+        text="More"
+        label={`More actions for ${e.full_name}`}
+        actions={[
+          { label: e.face_enrolled ? 'Update face' : 'Enroll face', icon: ScanFace, onClick: () => setEnrolling(e) },
+          { label: 'Reset password', icon: KeyRound, onClick: () => setResetting(e), hidden: e.id === me?.employee?.id },
+          { label: e.status === 'active' ? 'Deactivate' : 'Activate', icon: Power, onClick: () => setToggling(e) },
+          { label: 'Delete employee', icon: Trash2, tone: 'danger', onClick: () => setRemoving(e), hidden: e.id === me?.employee?.id },
+        ]}
+      />
+    </>
+  )
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">Employees</h1>
         {canManage && (
@@ -108,74 +135,99 @@ export function EmployeesPage() {
         <Select aria-label="Status" className="w-auto" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
           <option value="">Any status</option>
           <option value="active">Active</option>
+          <option value="pending">Pending approval</option>
           <option value="inactive">Inactive</option>
         </Select>
         <LocationSelect allowAll value={locationId} onChange={(id) => { setLocationId(id); setPage(1) }} />
+        <Select aria-label="Sort by" className="w-auto xl:hidden" value={sort} onChange={(e) => sortBy(e.target.value)}>
+          {COLUMNS.map(([key, text]) => <option key={key} value={key}>Sort by {text.toLowerCase()}</option>)}
+        </Select>
       </div>
 
-      <Table>
-        <thead>
-          <tr>
-            {COLUMNS.map(([key, text]) => (
-              <Th key={key} aria-sort={sort === key ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                <button type="button" className="inline-flex items-center gap-1" onClick={() => sortBy(key)}>
-                  {text}
-                  {sort === key && (dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
-                </button>
-              </Th>
-            ))}
-            <Th>Locations</Th>
-            {canManage && <Th>Joined</Th>}
-            {canManage && <Th>Last sign-in</Th>}
-            {canManage && <Th className="text-right">Actions</Th>}
-          </tr>
-        </thead>
-        <tbody>
-          {loading && !data ? <SkeletonRows cols={canManage ? 8 : 5} /> : data?.items.map((e) => (
-            <tr key={e.id}>
-              <Td>{e.employee_code}</Td>
-              <Td className="font-medium">
-                <span className="flex items-center gap-3">
-                  <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand">{e.full_name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()}</span>
-                  {e.full_name}
+      <ul className="space-y-4 xl:hidden">
+        {loading && !data ? <li><Skeleton className="h-28 w-full" /></li> : data?.items.map((e) => (
+          <li key={e.id} className="space-y-4 rounded-2xl border border-border bg-surface p-5">
+            <div className="flex items-start justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-3">
+                <span aria-hidden className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-soft text-sm font-semibold text-brand">{initials(e.full_name)}</span>
+                <span className="min-w-0">
+                  <span className="block truncate text-base font-semibold">{e.full_name}</span>
+                  <span className="text-sm text-ink-muted">{e.employee_code}</span>
                 </span>
-              </Td>
-              <Td>{e.job_title}{e.company && <span className="block text-xs text-ink-muted">{e.company}</span>}</Td>
-              <Td><StatusBadge status={e.status} /></Td>
-              <Td>{e.location_ids.map((id) => locationNames.get(id) ?? id).join(', ')}</Td>
-              {canManage && <Td>{fmtDate(e.date_joined)}</Td>}
-              {canManage && (
-                <Td>{e.account?.change_required ? <Badge tone="warn">Temporary password</Badge> : e.account?.last_login_at ? fmtDateTime(e.account.last_login_at) : 'Never'}</Td>
-              )}
-              {canManage && (
-                <Td className="space-x-1.5 whitespace-nowrap text-right">
-                  <Button size="sm" variant="outline" onClick={() => { setEditing(e); setFormOpen(true) }}>Edit</Button>
-                  <Button size="sm" variant="outline" onClick={() => setEnrolling(e)}>{e.face_enrolled ? 'Update face' : 'Enroll face'}</Button>
-                  {e.id !== me?.employee?.id && <Button size="sm" variant="outline" onClick={() => setResetting(e)}>Reset password</Button>}
-                  <Button size="sm" variant={e.status === 'active' ? 'danger' : 'outline'} onClick={() => setToggling(e)}>
-                    {e.status === 'active' ? 'Deactivate' : 'Activate'}
-                  </Button>
-                </Td>
-              )}
+              </span>
+              <StatusBadge status={e.status} />
+            </div>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+              <div><dt className="text-xs text-ink-muted">Job title</dt><dd>{e.job_title}{e.company && <span className="block text-xs text-ink-muted">{e.company}</span>}</dd></div>
+              <div><dt className="text-xs text-ink-muted">Locations</dt><dd>{e.location_ids.map((id) => locationNames.get(id) ?? id).join(', ')}</dd></div>
+              {canManage && <div><dt className="text-xs text-ink-muted">Joined</dt><dd>{fmtDate(e.date_joined)}</dd></div>}
+              {canManage && <div><dt className="text-xs text-ink-muted">Last sign-in</dt><dd>{e.account?.change_required ? <Badge tone="warn">Temporary password</Badge> : e.account?.last_login_at ? fmtDateTime(e.account.last_login_at) : 'Never'}</dd></div>}
+            </dl>
+            {canManage && <div className="flex items-center gap-2 border-t border-border pt-4">{rowActions(e)}</div>}
+          </li>
+        ))}
+      </ul>
+      <div className="hidden xl:block">
+        <Table>
+          <thead>
+            <tr>
+              {([['full_name', 'Employee'], ['job_title', 'Job title'], ['status', 'Status']] as const).map(([key, text]) => (
+                <Th key={key} aria-sort={sort === key ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" className="inline-flex items-center gap-1" onClick={() => sortBy(key)}>
+                    {text}
+                    {sort === key && (dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
+                  </button>
+                </Th>
+              ))}
+              <Th>Locations</Th>
+              {canManage && <Th>Last sign-in</Th>}
+              {canManage && <Th className="w-px text-right"><span className="sr-only">Actions</span></Th>}
             </tr>
-          ))}
-        </tbody>
-      </Table>
-      {data?.items.length === 0 && <EmptyState title="No employees found" hint="Try changing the search or filters." />}
+          </thead>
+          <tbody>
+            {loading && !data ? <SkeletonRows cols={canManage ? 6 : 4} /> : data?.items.map((e) => (
+              <tr key={e.id}>
+                <Td className="py-4">
+                  <span className="flex items-center gap-3">
+                    <span aria-hidden className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand">{initials(e.full_name)}</span>
+                    <span className="min-w-0">
+                      <span className="block font-medium">{e.full_name}</span>
+                      <span className="text-xs text-ink-muted">{e.employee_code}{e.date_joined ? ` - joined ${fmtDate(e.date_joined)}` : ''}</span>
+                    </span>
+                  </span>
+                </Td>
+                <Td>{e.job_title}{e.company && <span className="block text-xs text-ink-muted">{e.company}</span>}</Td>
+                <Td><StatusBadge status={e.status} /></Td>
+                <Td>{e.location_ids.map((id) => locationNames.get(id) ?? id).join(', ')}</Td>
+                {canManage && (
+                  <Td>{e.account?.change_required ? <Badge tone="warn">Temporary password</Badge> : e.account?.last_login_at ? fmtDateTime(e.account.last_login_at) : <span className="text-ink-muted">Never</span>}</Td>
+                )}
+                {canManage && <Td><div className="flex items-center justify-end gap-2">{rowActions(e)}</div></Td>}
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </div>
+      {data?.items.length === 0 && <EmptyState title="No employees found" />}
       {data && <Pagination page={page} size={SIZE} total={data.total} onPage={setPage} />}
 
       {formOpen && (
         <EmployeeForm open employee={editing} supervisors={(all?.items ?? []).filter((x) => x.role_tier !== 'steward')}
           onClose={() => setFormOpen(false)} onSaved={() => { setFormOpen(false); reload() }} />
       )}
-      <Modal open={enrolling !== null} title={`Enroll face - ${enrolling?.full_name ?? ''}`} onClose={() => setEnrolling(null)}>
-        <p className="mb-3 text-sm text-ink-muted">
-          The employee looks at the camera. Only a numeric template of the face is stored, never a photo, and it is used to check them in and out when face verification is on in Settings.
-          {enrolling?.face_enrolled && ' A new capture replaces the one on file.'}
-        </p>
+      <Modal
+        open={enrolling !== null}
+        size="md"
+        title={`${enrolling?.face_enrolled ? 'Update' : 'Enroll'} face`}
+        description={enrolling ? `${enrolling.full_name}. Only a numeric face template is stored, never a photo.` : undefined}
+        onClose={() => setEnrolling(null)}
+        footer={enrolling?.face_enrolled ? <Button variant="outline" className="mr-auto border-danger/40 text-danger hover:bg-danger-soft" onClick={removeFace}>Remove the face on file</Button> : undefined}
+      >
         {enrolling && <FaceCapture onCapture={enroll} />}
-        {enrolling?.face_enrolled && <div className="mt-3 text-right"><Button size="sm" variant="outline" onClick={removeFace}>Remove the face on file</Button></div>}
       </Modal>
+      <ConfirmDialog open={removing !== null} title="Delete employee" confirmLabel="Delete employee"
+        message={`Delete ${removing?.full_name ?? 'this employee'} and their sign-in? This cannot be undone. Anyone with attendance, checklist, stock or other history cannot be deleted; deactivate them instead.`}
+        onConfirm={confirmRemove} onCancel={() => setRemoving(null)} />
       {resetting && <ResetPasswordModal employee={resetting} onClose={() => setResetting(null)} onDone={reload} />}
       <ConfirmDialog open={toggling !== null} title={toggling?.status === 'active' ? 'Deactivate employee' : 'Activate employee'}
         message={toggling?.status === 'active'

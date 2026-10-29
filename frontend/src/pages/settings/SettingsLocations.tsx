@@ -1,15 +1,19 @@
+import { MapPin, Pencil, Plus, Power, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { TimezoneInput } from '@/components/TimezoneInput'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
+import { CardGrid, RecordCard, SectionHeader } from '@/components/ui/record-card'
 import { Select } from '@/components/ui/select'
-import { Skeleton, Table, Td, Th } from '@/components/ui/table'
-import { TimezoneInput } from '@/components/TimezoneInput'
+import { EmptyState, Skeleton } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { currentPosition } from '@/lib/geo'
+import { label } from '@/lib/format'
 import { useRun, useToast } from '@/lib/toast'
 import { useApi } from '@/lib/useApi'
 
@@ -27,13 +31,14 @@ interface LocationRow {
 }
 
 const KINDS = ['kitchen', 'restaurant', 'bar', 'banquet', 'station', 'other']
-const BLANK = { id: null as number | null, code: '', name: '', kind: 'kitchen', timezone: 'Asia/Kuwait', active: true, latitude: '', longitude: '', radius: '' }
+const BLANK = { id: null as number | null, code: '', name: '', kind: 'kitchen', timezone: 'Asia/Kuwait', latitude: '', longitude: '', radius: '' }
 
 export function SettingsLocations() {
   const run = useRun()
   const toast = useToast()
   const { data, reload } = useApi<{ locations: LocationRow[] }>('/settings')
   const [loc, setLoc] = useState<typeof BLANK | null>(null)
+  const [removing, setRemoving] = useState<LocationRow | null>(null)
   const org = useApi<{ timezone: string }>('/organization')
   const { refresh } = useAuth()
 
@@ -42,11 +47,28 @@ export function SettingsLocations() {
     if (!loc) return
     const fence = { latitude: loc.latitude === '' ? null : Number(loc.latitude), longitude: loc.longitude === '' ? null : Number(loc.longitude), geofence_radius_m: loc.radius === '' ? null : Number(loc.radius) }
     const body = loc.id
-      ? { name: loc.name, kind: loc.kind, timezone: loc.timezone, active: loc.active, ...fence }
+      ? { name: loc.name, kind: loc.kind, timezone: loc.timezone, ...fence }
       : { code: loc.code, name: loc.name, kind: loc.kind, timezone: loc.timezone, ...fence }
     const ok = await run(() => api(loc.id ? `/settings/locations/${loc.id}` : '/settings/locations', { method: loc.id ? 'PUT' : 'POST', body }), 'Location saved')
     if (ok) {
       setLoc(null)
+      reload()
+      await refresh()
+    }
+  }
+
+  async function setActive(l: LocationRow) {
+    if (await run(() => api(`/settings/locations/${l.id}`, { method: 'PUT', body: { active: !l.active } }), l.active ? 'Location made inactive' : 'Location made active')) {
+      reload()
+      await refresh()
+    }
+  }
+
+  async function remove() {
+    if (!removing) return
+    const done = await run(() => api(`/settings/locations/${removing.id}`, { method: 'DELETE' }), 'Location deleted')
+    setRemoving(null)
+    if (done) {
       reload()
       await refresh()
     }
@@ -62,60 +84,77 @@ export function SettingsLocations() {
     }
   }
 
+  const edit = (l: LocationRow) => setLoc({ ...BLANK, id: l.id, code: l.code, name: l.name, kind: l.kind, timezone: l.timezone,
+    latitude: l.latitude === null ? '' : String(l.latitude), longitude: l.longitude === null ? '' : String(l.longitude), radius: l.geofence_radius_m === null ? '' : String(l.geofence_radius_m) })
+
   if (!data) return <Skeleton className="h-48 w-full" />
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-ink-muted">Kitchens, restaurants, bars, banquet areas and stations. Each has its own time zone and an optional area that check-in and check-out are limited to.</p>
-        <Button onClick={() => setLoc({ ...BLANK, timezone: org.data?.timezone ?? BLANK.timezone })}>Add location</Button>
-      </div>
-      <Table>
-        <thead><tr><Th>Code</Th><Th>Name</Th><Th>Type</Th><Th>Time zone</Th><Th>Status</Th><Th /></tr></thead>
-        <tbody>
-          {data.locations.map((l) => (
-            <tr key={l.id}>
-              <Td>{l.code}</Td><Td className="font-medium">{l.name}</Td><Td>{l.kind}</Td><Td>{l.timezone}</Td>
-              <Td><Badge tone={l.active ? 'ok' : 'neutral'}>{l.active ? 'Active' : 'Inactive'}</Badge>{l.geofence && <Badge className="ml-1">Geofence {l.geofence_radius_m} m</Badge>}</Td>
-              <Td><Button size="sm" variant="outline" onClick={() => setLoc({ ...BLANK, ...l, latitude: l.latitude === null ? '' : String(l.latitude), longitude: l.longitude === null ? '' : String(l.longitude), radius: l.geofence_radius_m === null ? '' : String(l.geofence_radius_m) })}>Edit</Button></Td>
-            </tr>
-          ))}
-        </tbody>
-      </Table>
+    <div className="space-y-6">
+      <SectionHeader title="Locations" count={data.locations.length}
+        action={<Button onClick={() => setLoc({ ...BLANK, timezone: org.data?.timezone ?? BLANK.timezone })}><Plus className="h-4 w-4" /> Add location</Button>} />
 
-      <Modal open={loc !== null} title={loc?.id ? 'Edit location' : 'Add location'} onClose={() => setLoc(null)}>
+      {data.locations.length === 0 ? <EmptyState title="No locations yet" /> : (
+        <CardGrid>
+          {data.locations.map((l) => (
+            <RecordCard
+              key={l.id}
+              title={l.name}
+              subtitle={l.code}
+              inactive={!l.active}
+              badges={<Badge tone={l.active ? 'ok' : 'neutral'}>{l.active ? 'Active' : 'Inactive'}</Badge>}
+              facts={[
+                { label: 'Type', value: label(l.kind) },
+                { label: 'Time zone', value: l.timezone },
+                { label: 'Check-in area', value: l.geofence ? `Within ${l.geofence_radius_m} m` : 'Anywhere' },
+              ]}
+              actions={[
+                { label: 'Edit', icon: Pencil, onClick: () => edit(l) },
+                { label: l.active ? 'Make inactive' : 'Make active', icon: Power, onClick: () => setActive(l) },
+                { label: 'Delete', icon: Trash2, tone: 'danger', onClick: () => setRemoving(l) },
+              ]}
+            />
+          ))}
+        </CardGrid>
+      )}
+
+      <Modal
+        open={loc !== null}
+        title={loc?.id ? 'Edit location' : 'Add location'}
+        description={loc?.id ? 'Change how this location is named, timed and checked in to.' : 'A kitchen, bar, banquet hall or any place the team works.'}
+        size="lg"
+        onClose={() => setLoc(null)}
+        footer={<>
+          <Button type="button" variant="outline" onClick={() => setLoc(null)}>Cancel</Button>
+          <Button type="submit" form="location-form">Save location</Button>
+        </>}
+      >
         {loc && (
-          <form onSubmit={save} className="space-y-3">
-            {!loc.id && <Field label="Code"><Input required value={loc.code} onChange={(e) => setLoc({ ...loc, code: e.target.value })} /></Field>}
-            <Field label="Name"><Input required value={loc.name} onChange={(e) => setLoc({ ...loc, name: e.target.value })} /></Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Type"><Select value={loc.kind} onChange={(e) => setLoc({ ...loc, kind: e.target.value })}>{KINDS.map((k) => <option key={k} value={k}>{k}</option>)}</Select></Field>
-              <Field label="Time zone" hint="Shift times, check-ins and report dates at this location use it."><TimezoneInput value={loc.timezone} onChange={(zone) => setLoc({ ...loc, timezone: zone })} /></Field>
+          <form id="location-form" onSubmit={save} className="space-y-6">
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="Code"><Input required disabled={loc.id !== null} maxLength={20} value={loc.code} onChange={(e) => setLoc({ ...loc, code: e.target.value })} /></Field>
+              <Field label="Name"><Input required value={loc.name} onChange={(e) => setLoc({ ...loc, name: e.target.value })} /></Field>
+              <Field label="Type"><Select value={loc.kind} onChange={(e) => setLoc({ ...loc, kind: e.target.value })}>{KINDS.map((k) => <option key={k} value={k}>{label(k)}</option>)}</Select></Field>
+              <Field label="Time zone"><TimezoneInput value={loc.timezone} onChange={(zone) => setLoc({ ...loc, timezone: zone })} /></Field>
             </div>
-            <fieldset className="space-y-2 rounded-md border border-border p-3">
-              <legend className="px-1 text-sm font-medium">Limit check-in and check-out to an area</legend>
-              <p className="text-xs text-ink-muted">Staff must be within the radius of this point to check in or out. Leave all three empty for no restriction. Stand at the location and use your current position.</p>
-              <div className="grid grid-cols-3 gap-3">
+            <fieldset className="space-y-4 rounded-xl border border-border p-4">
+              <legend className="flex items-center gap-2 px-2 text-sm font-semibold"><MapPin aria-hidden className="h-4 w-4 text-brand" /> Limit check-in and check-out to an area</legend>
+              <div className="grid gap-4 sm:grid-cols-3">
                 <Field label="Latitude"><Input type="number" step="any" min={-90} max={90} value={loc.latitude} onChange={(e) => setLoc({ ...loc, latitude: e.target.value })} /></Field>
                 <Field label="Longitude"><Input type="number" step="any" min={-180} max={180} value={loc.longitude} onChange={(e) => setLoc({ ...loc, longitude: e.target.value })} /></Field>
-                <Field label="Radius (metres)" hint="20 to 5000"><Input type="number" min={20} max={5000} value={loc.radius} onChange={(e) => setLoc({ ...loc, radius: e.target.value })} /></Field>
+                <Field label="Radius (metres)"><Input type="number" min={20} max={5000} value={loc.radius} onChange={(e) => setLoc({ ...loc, radius: e.target.value })} /></Field>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button type="button" size="sm" variant="outline" onClick={useHere}>Use my current position</Button>
                 <Button type="button" size="sm" variant="ghost" onClick={() => setLoc({ ...loc, latitude: '', longitude: '', radius: '' })}>Remove restriction</Button>
               </div>
             </fieldset>
-            {loc.id && (
-              <>
-                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={loc.active} onChange={(e) => setLoc({ ...loc, active: e.target.checked })} /> Location is active</label>
-              </>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setLoc(null)}>Cancel</Button>
-              <Button type="submit">Save</Button>
-            </div>
           </form>
         )}
       </Modal>
+
+      <ConfirmDialog open={removing !== null} title="Delete location" confirmLabel="Delete location"
+        message={`Delete ${removing?.name ?? 'this location'}? This cannot be undone. A location that people, stock, checklists or readings already use cannot be deleted; make it inactive instead.`}
+        onConfirm={remove} onCancel={() => setRemoving(null)} />
     </div>
   )
 }
